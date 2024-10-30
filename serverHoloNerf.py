@@ -500,21 +500,22 @@ def start_export():
         return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 400
 
     try:
-        obb_scaleX = float(request.args.get("x", 1))
-        obb_scaleY = float(request.args.get("y", 1))
-        obb_scaleZ = float(request.args.get("z", 1))
+        data = request.get_json()
+        obb_scale_x = float(data.get("x", 1))
+        obb_scale_y = float(data.get("y", 1))
+        obb_scale_z = float(data.get("z", 1))
     except (TypeError, ValueError):
         return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
 
     # Debugging: log request parameters
-    logger.info("Received export parameters: x=%s, y=%s, z=%s", obb_scaleX, obb_scaleY, obb_scaleZ)
+    logger.info("Received export parameters: x=%s, y=%s, z=%s", obb_scale_x, obb_scale_y, obb_scale_z)
 
     state.is_exporting = True
     state.export_completed = False
     output_queue = multiprocessing.Queue()
     state.export_process = multiprocessing.Process(
         target=run_export, 
-        args=(output_queue, obb_scaleX, obb_scaleY, obb_scaleZ)
+        args=(output_queue, obb_scale_x, obb_scale_y, obb_scale_z)
     )
     state.export_process.start()
 
@@ -537,7 +538,7 @@ def start_export():
     threading.Thread(target=monitor_export).start()
 
     # Debugging: log the final export command
-    export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
+    export_command = get_export_command(obb_scale_x, obb_scale_y, obb_scale_z)
     logger.info("Export command: %s", export_command)
 
     return jsonify({"status": "Success", "message": "Esportazione avviata"})
