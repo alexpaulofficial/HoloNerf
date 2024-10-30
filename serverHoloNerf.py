@@ -78,36 +78,45 @@ def load_and_process_data(rgb_dir, intrinsics_path, extrinsics_path):
 # Funzione per trasformare una posa dalla convenzione di Unity a quella di OpenGL (NerfStudio)
 def transform_pose(pose):
     """
-    Trasforma una posa da Unity (left-handed, Y-up) a OpenGL(NerfStudio) (right-handed, Y-up).
-    Input: matrice 4x4 rappresentante rotazione e traslazione in coordinate Unity
-    Output: matrice 4x4 trasformata per OpenGL/Blender
+    Trasforma una posa da Unity (left-handed, Y-up) a OpenGL (right-handed, Y-up).
+    La trasformazione tiene conto che i due sistemi differiscono per:
+    - direzione degli assi X e Y (riflessi)
+    - inversione della traslazione per il cambio di posizione della camera
     """
-    # Separazione di rotazione e traslazione dalla matrice di posa Unity
-    R = pose[:3, :3]  # Matrice di rotazione 3x3
-    t = pose[:3, 3]   # Vettore di traslazione 3x1
+    # Estrae rotazione (3x3) e traslazione (3x1) dalla matrice di posa
+    R = pose[:3, :3]  
+    t = pose[:3, 3]   
 
-    # Matrice di cambio di base da Unity (Y-up, left-handed) a OpenGL (Y-up)
-    # Inverte X e Z per passare da left-handed a right-handed
-    change_basis = np.array([
+    # Crea una copia della rotazione che verrà modificata
+    R_new = R.copy()
+
+    # Inverte la traslazione per gestire il cambio di direzione della camera
+    # In Unity la camera guarda verso -Z, in OpenGL verso +Z
+    t_new = -t.copy()
+
+    # Matrice di riflessione che:
+    # - Inverte X e Y (primi due elementi della diagonale -1)
+    # - Mantiene Z invariato (ultimo elemento della diagonale 1)
+    # Questo perché la camera in Unity è ruotata di 180° attorno all'asse Z 
+    # rispetto alla camera in OpenGL
+    R_z_reflection = np.array([
         [-1, 0, 0],
-        [0, 1, 0],
-        [0, 0, -1]
+        [0, -1, 0],
+        [0, 0, 1]
     ])
 
-    # Applica la trasformazione inversa alla rotazione
-    # Nota: la trasposizione della matrice di cambio base è uguale alla sua inversa
-    # essendo una matrice ortogonale
-    R_new = np.dot(np.dot(change_basis.T, R), change_basis)
+    # Applica la riflessione alla rotazione
+    # La moltiplicazione a destra (R * R_z_reflection) è corretta perché 
+    # stiamo trasformando dal sistema di coordinate locale della camera
+    R_new = np.dot(R, R_z_reflection)
 
-    # Trasforma la traslazione
-    t_new = np.dot(change_basis.T, t)
-
-    # Ricostruzione della matrice di posa finale
-    pose_new = np.eye(4)  # Crea matrice identità 4x4
-    pose_new[:3, :3] = R_new  # Inserisce la nuova rotazione
-    pose_new[:3, 3] = t_new   # Inserisce la nuova traslazione
+    # Ricostruisce la nuova matrice di posa 4x4
+    pose_new = np.eye(4)
+    pose_new[:3, :3] = R_new  # Inserisce la rotazione trasformata
+    pose_new[:3, 3] = t_new   # Inserisce la traslazione invertita
 
     return pose_new
+
 # Funzione per convertire tutte le pose da Unity a OpenGL (la funzione precedente si riguarda solo una posa)
 def convert_poses(poses):
     converted_poses = []
@@ -392,6 +401,11 @@ def get_mesh():
 # Rotta per eliminare tutti i dati caricati sul server
 @app.route("/delete_server", methods=["DELETE"])
 def delete_server():
+    global is_training, is_exporting
+
+    if is_training or is_exporting:
+        return jsonify({"status": "Error", "message": "Non è possibile al momento eliminare il server. Training o export in corso."}), 400
+
     try:
         for root, dirs, files in os.walk(DATA_FOLDER, topdown=False):
             for file in files:
