@@ -168,7 +168,10 @@ public class StartStopTrainingScript : MonoBehaviour
        for (int i = 0; i < MaxRetries; i++)
        {
            try {
-               await request.SendWebRequest();
+               UnityWebRequestAsyncOperation operation = request.SendWebRequest();
+               while (!operation.isDone)
+                   await Task.Yield();
+
                if (request.result == UnityWebRequest.Result.Success)
                    return true;
            }
@@ -185,33 +188,46 @@ public class StartStopTrainingScript : MonoBehaviour
    {
        while (isTraining)
        {
+           UnityWebRequest www = UnityWebRequest.Get($"{ServerUrl}/training_progress");
+           yield return www.SendWebRequest();
+
            try
            {
-               using (UnityWebRequest www = UnityWebRequest.Get($"{ServerUrl}/training_progress"))
+               if (www.result == UnityWebRequest.Result.Success)
                {
-                   yield return www.SendWebRequest();
-
-                   if (www.result == UnityWebRequest.Result.Success)
-                   {
-                       ProcessProgressResponse(www);
-                   }
-                   else if (www.responseCode == 204)
-                   {
-                       CompleteTraining();
-                       yield break;
-                   }
-                   else
-                   {
-                       HandleError($"Progress check failed: {www.error}");
-                   }
+                   ProcessProgressResponse(www);
+               }
+               else if (www.responseCode == 204)
+               {
+                   CompleteTraining();
+                   www.Dispose();
+                   yield break;
+               }
+               else
+               {
+                   HandleError($"Progress check failed: {www.error}");
                }
            }
            catch (Exception e)
            {
                HandleError($"Progress monitoring error: {e.Message}");
            }
+           finally
+           {
+               www.Dispose();
+           }
 
            yield return new WaitForSeconds(ProgressCheckInterval);
+       }
+   }
+
+   private async Task<bool> StartTrainingProcessAsync()
+   {
+       try {
+           return await SendRequestAsync($"{ServerUrl}/start_training", "GET");
+       }
+       catch (Exception e) {
+           throw new Exception($"Failed to start training: {e.Message}");
        }
    }
 
