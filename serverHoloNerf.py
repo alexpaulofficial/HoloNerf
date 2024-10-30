@@ -18,6 +18,8 @@ import threading
 import multiprocessing
 from typing import Optional
 from dataclasses import dataclass
+from functools import wraps
+import time
 
 import numpy as np
 from PIL import Image
@@ -56,6 +58,38 @@ config = Config()
 state = ProcessState()
 app = Flask(__name__)
 
+def cleanup_temp_files():
+    """Rimuove i file ZIP temporanei più vecchi di 1 ora"""
+    temp_dir = config.DATA_FOLDER
+    threshold = time.time() - 3600
+   
+    for f in os.listdir(temp_dir):
+        if f.endswith('.zip'):
+            path = os.path.join(temp_dir, f)
+            if os.path.getctime(path) < threshold:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+               
+def retry_operation(max_attempts=3, delay=1):
+    """Decorator per retry delle operazioni critiche"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            attempts = 0
+            while attempts < max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except (IOError, subprocess.CalledProcessError):
+                    attempts += 1
+                    if attempts == max_attempts:
+                        raise
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
+
 def replace_commas_with_dots(file_path: str) -> None:
     """
     Sostituisce le virgole con i punti nei file di testo per standardizzare i separatori decimali.
@@ -71,6 +105,16 @@ def replace_commas_with_dots(file_path: str) -> None:
     except IOError as e:
         logger.error("Errore nella modifica del file %s: %s", file_path, e)
         raise
+
+# Aggiungi cleanup periodico
+def start_cleanup_thread():
+    def periodic_cleanup():
+        while True:
+            cleanup_temp_files()
+            time.sleep(3600)
+    
+    cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
+    cleanup_thread.start()
 
 def resize_images_to_720p(folder_path: str) -> None:
     """
@@ -209,6 +253,7 @@ def create_transforms_dict(image_paths: list[str],
         "frames": frames
     }
 
+@retry_operation()
 def create_transforms_json(rgb_dir: str, 
                          intrinsics_path: str, 
                          extrinsics_path: str, 
@@ -302,6 +347,7 @@ def get_export_command(obb_scaleX: float = 1, obb_scaleY: float = 1, obb_scaleZ:
             "--obb_rotation 0.0000000000 0.0000000000 0.0000000000 "
             f"--obb_scale {obb_scaleX} {obb_scaleY} {obb_scaleZ}")
 
+@retry_operation()
 def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) -> None:
     """
     Esegue un comando nell'ambiente Conda specificato.
@@ -377,7 +423,7 @@ def run_export(output_queue: multiprocessing.Queue, obb_scaleX: float, obb_scale
     try:
         export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
         run_command_in_conda_env(export_command, output_queue)
-    except Exception as e:
+    except (subprocess.CalledProcessError, OSError, ValueError) as e:
         output_queue.put(f"Errore nel processo di esportazione: {str(e)}")
         logger.error("Errore nel processo di esportazione: %s", e)
     finally:
@@ -410,7 +456,7 @@ def upload_data():
         resize_images_to_720p(os.path.join(config.DATA_FOLDER, "images"))
         return jsonify({"status": "Success", "message": "File caricato ed estratto con successo"})
     except (IOError, ValueError) as e:
-        logger.error(f"Errore nell'upload del file: {e}")
+        logger.error("Errore nell'upload del file: %s", e)
         return jsonify({"status": "Error", "message": "Errore nell'elaborazione del file"}), 500
 
 @app.route("/start_training")
@@ -460,6 +506,9 @@ def start_export():
     except (TypeError, ValueError):
         return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
 
+    # Debugging: log request parameters
+    logger.info("Received export parameters: x=%s, y=%s, z=%s", obb_scaleX, obb_scaleY, obb_scaleZ)
+
     state.is_exporting = True
     state.export_completed = False
     output_queue = multiprocessing.Queue()
@@ -486,6 +535,11 @@ def start_export():
             state.export_process.join()
 
     threading.Thread(target=monitor_export).start()
+
+    # Debugging: log the final export command
+    export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
+    logger.info("Export command: %s", export_command)
+
     return jsonify({"status": "Success", "message": "Esportazione avviata"})
 
 @app.route("/export_progress")
@@ -508,8 +562,8 @@ def stop_training():
             try:
                 state.training_process.terminate()
                 state.training_process.join()
-            except Exception as e:
-                logger.error(f"Errore nell'interruzione del training: {e}")
+            except (OSError, subprocess.CalledProcessError) as e:
+                logger.error("Errore nell'interruzione del training: %s", e)
                 return jsonify({"status": "Error", "message": "Errore nell'interruzione del training"}), 500
         return jsonify({"status": "Success", "message": "Training interrotto"})
     return jsonify({"status": "Error", "message": "Nessun training in corso"}), 201
@@ -537,8 +591,8 @@ def get_mesh():
             return send_file(file_path, as_attachment=True), 200
         else:
             return jsonify({"status": "Error", "message": "File mesh non trovato"}), 404
-    except Exception as e:
-        logger.error(f"Errore nel recupero del mesh: {e}")
+    except (OSError, ValueError) as e:
+        logger.error("Errore nel recupero del mesh: %s", e)
         return jsonify({"status": "Error", "message": "Errore nel recupero del mesh"}), 500
 
 @app.route("/delete_server", methods=["DELETE"])
@@ -554,11 +608,11 @@ def delete_server():
         for root, dirs, files in os.walk(config.DATA_FOLDER, topdown=False):
             for file in files:
                 os.remove(os.path.join(root, file))
-            for dir in dirs:
-                os.rmdir(os.path.join(root, dir))
+            for directory in dirs:
+                os.rmdir(os.path.join(root, directory))
         return jsonify({"status": "Success", "message": "Dati eliminati con successo"}), 200
-    except Exception as e:
-        logger.error(f"Errore nell'eliminazione dei dati: {e}")
+    except (OSError, IOError) as e:
+        logger.error("Errore nell'eliminazione dei dati: %s", e)
         return jsonify({"status": "Error", "message": "Errore nell'eliminazione dei dati"}), 500
 
 if __name__ == "__main__":
