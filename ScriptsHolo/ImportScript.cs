@@ -61,8 +61,7 @@ public class DownloadImportMeshScript : MonoBehaviour
 
     private IEnumerator DownloadAndLoadMeshRoutine()
     {
-        try
-        {
+        
             string meshZipPath = Path.Combine(Application.temporaryCachePath, "mesh.zip");
             string extractPath = Path.Combine(Application.temporaryCachePath, "extracted");
 
@@ -94,6 +93,8 @@ public class DownloadImportMeshScript : MonoBehaviour
             }
 
             yield return new WaitForEndOfFrame();
+            try
+        {
             LoadAndPositionMesh(objPath);
             
             // Pulizia file temporanei

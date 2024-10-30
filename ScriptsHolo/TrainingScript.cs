@@ -126,7 +126,7 @@ public class StartStopTrainingScript : MonoBehaviour
                ZipFile.CreateFromDirectory(
                    captureFolder,
                    zipPath,
-                   CompressionLevel.Fastest,
+                   System.IO.Compression.CompressionLevel.Fastest,
                    false
                );
            });

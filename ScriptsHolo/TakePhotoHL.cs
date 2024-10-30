@@ -6,6 +6,7 @@ using UnityEngine;
 using MixedReality.Toolkit.UX;
 using TMPro;
 using UnityEngine.Windows.WebCam;
+using System.Collections.Generic;
 
 public class ScreenshotHandlerHL : MonoBehaviour
 {
