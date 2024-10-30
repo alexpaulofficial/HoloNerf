@@ -223,6 +223,42 @@ private async Task<string> CreateZipFileAsync()
             buttonText.text = isTraining ? "Stop Training" : "Start Training";
     }
 
+    private async Task<UnityWebRequestAsyncOperation> SendRequestAsync(string url, string method, WWWForm form = null)
+{
+   UnityWebRequest request;
+   if (form != null)
+       request = UnityWebRequest.Post(url, form);
+   else
+       request = new UnityWebRequest(url, method);
+
+   request.downloadHandler = new DownloadHandlerBuffer();
+   
+   for (int i = 0; i < MaxRetries; i++)
+   {
+       try {
+           var operation = await request.SendWebRequest();
+           if (operation.result == UnityWebRequest.Result.Success)
+               return operation;
+       }
+       catch {
+           if (i == MaxRetries - 1) throw;
+       }
+       await Task.Delay((int)(RetryDelay * 1000));
+   }
+   
+   throw new Exception($"Request failed after {MaxRetries} attempts");
+}
+
+private async Task<bool> StartTrainingProcessAsync()
+{
+   try {
+       var response = await SendRequestAsync($"{ServerUrl}/start_training", "GET");
+       return response.responseCode == 200;
+   }
+   catch (Exception e) {
+       throw new Exception($"Failed to start training: {e.Message}");
+   }
+}
     [Serializable]
     private class ProgressData
     {
