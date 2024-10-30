@@ -1,104 +1,148 @@
-from ntpath import join
-import queue
-from flask import Flask, json, jsonify, request, send_file
-import subprocess
-import multiprocessing
+"""
+Server Flask di HoloNerf.
+Gestisce il caricamento dati, training ed esportazione di modelli 3D.
+
+Autori: Alessio Paolucci, Marco Proietti
+Versione: 1.0
+"""
+
 import os
+import subprocess
 import sys
 import io
-import locale
-import threading
+import queue
 import glob
-import zipfile
 import logging
+import zipfile
+import threading
+import multiprocessing
+from typing import Optional
+from dataclasses import dataclass
+
 import numpy as np
-from werkzeug.utils import secure_filename
 from PIL import Image
+from flask import Flask, json, jsonify, request, send_file
+from werkzeug.utils import secure_filename
 
+# Configurazione logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class Config:
+    """Configurazione del server e dei parametri di elaborazione."""
+    CONDA_ENV: str = "nerfstudio"
+    NERFSTUDIO_TRAIN_COMMAND: str = "ns-train nerfacto --data DATA"
+    EXPORT_FOLDER: str = "exports/mesh"
+    DATA_FOLDER: str = "DATA"
+    IMAGE_TARGET_SIZE: tuple[int, int] = (1280, 720)
+    SUPPORTED_IMAGE_FORMATS: tuple[str, ...] = ('.jpg')
+
+class ProcessState:
+    """Gestisce lo stato dei processi di training ed export."""
+    def __init__(self):
+        self.training_process: Optional[multiprocessing.Process] = None
+        self.training_progress: float = 0
+        self.is_training: bool = False
+        self.is_completed: bool = False
+        self.export_process: Optional[multiprocessing.Process] = None
+        self.is_exporting: bool = False
+        self.export_completed: bool = False
+
+config = Config()
+state = ProcessState()
 app = Flask(__name__)
-logging.basicConfig(level=logging.INFO)
 
-# Variabili globali per il monitoraggio dei processi
-training_process = None
-training_progress = 0
-is_training = False
-is_completed = False
-export_process = None
-is_exporting = False
-export_completed = False
+def replace_commas_with_dots(file_path: str) -> None:
+    """
+    Sostituisce le virgole con i punti nei file di testo per standardizzare i separatori decimali.
+    
+    Args:
+        file_path: Percorso del file da modificare
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content = file.read().replace(',', '.')
+        with open(file_path, 'w', encoding='utf-8') as file:
+            file.write(content)
+    except IOError as e:
+        logger.error("Errore nella modifica del file %s: %s", file_path, e)
+        raise
 
-# Variabili di configurazione
-CONDA_ENV = "nerfstudio"
-NERFSTUDIO_TRAIN_COMMAND = "ns-train nerfacto --data DATA"
-EXPORT_FOLDER = "exports/mesh"
-TEMP_FOLDER = "temp"
-DATA_FOLDER = "DATA"
-
-# Fuznione per sostituire le virgole con i punti nei file di testo
-def replace_commas_with_dots(file_path):
-    with open(file_path, 'r', encoding='utf-8') as file:
-        content = file.read().replace(',', '.')
-    with open(file_path, 'w', encoding='utf-8') as file:
-        file.write(content)
-
-# Funzione per ridimensionare le immagini a 720p in modo da agevolare il training
-def resize_images_to_720p(folder_path):    
-    target_size = (1280, 720) 
+def resize_images_to_720p(folder_path: str) -> None:
+    """
+    Ridimensiona le immagini nella cartella specificata a risoluzione 720p.
+    
+    Args:
+        folder_path: Percorso della cartella contenente le immagini
+    """
     for root, _, files in os.walk(folder_path):
         for file in files:
-            if file.lower().endswith(('.png','.jpg','.jpeg')):
-                file_path = os.path.join(root,file)                
-                with Image.open(file_path) as img:
-                    if img.size != target_size:
-                        img = img.resize(target_size, Image.LANCZOS)
-                        img.save(file_path)
+            if file.lower().endswith(config.SUPPORTED_IMAGE_FORMATS):
+                try:
+                    file_path = os.path.join(root, file)
+                    with Image.open(file_path) as img:
+                        if img.size != config.IMAGE_TARGET_SIZE:
+                            img = img.resize(config.IMAGE_TARGET_SIZE, Image.LANCZOS)
+                            img.save(file_path)
+                except (IOError, ValueError) as e:
+                    logger.error("Errore nel processare l'immagine %s: %s", file_path, e)
 
-# Funzione per caricare e processare i dati a partire dalle immagini RGB, dai file di intrinseci ed estrinseci
-def load_and_process_data(rgb_dir, intrinsics_path, extrinsics_path):
+def load_and_process_data(rgb_dir: str, intrinsics_path: str, extrinsics_path: str):
+    """
+    Carica e processa i dati dalle immagini RGB e dai file di parametri intrinseci ed estrinseci.
+    
+    Args:
+        rgb_dir: Percorso delle immagini RGB
+        intrinsics_path: Percorso del file dei parametri intrinseci
+        extrinsics_path: Percorso del file dei parametri estrinseci
+    
+    Returns:
+        tuple: Tuple contenente paths delle immagini, pose, timestamps e parametri della camera
+    """
     replace_commas_with_dots(intrinsics_path)
     replace_commas_with_dots(extrinsics_path)
     
-    image_paths = glob.glob(rgb_dir)
-    
-    image_paths = [path.replace("DATA\\", "") for path in image_paths]
+    # Trova i paths delle immagini e processa gli indici
+    image_paths = glob.glob(os.path.join(rgb_dir, "*.jpg"))
+    image_paths = [path.replace(f"{config.DATA_FOLDER}/", "") for path in image_paths]
+    img_idxs = np.array([int(path.split("\\")[-1].split(".")[0]) for path in image_paths]) - 1
 
-    img_idxs = [int(path.split("\\")[-1].split(".")[0]) for path in image_paths]
-    img_idxs = np.array(img_idxs) - 1
-
+    # Carica i parametri intrinseci
     intrinsic_txt = np.loadtxt(intrinsics_path)
     W, H = map(int, intrinsic_txt[-2:])
-    fl_x, fl_y, cx, cy = intrinsic_txt[0], intrinsic_txt[4], intrinsic_txt[2], intrinsic_txt[5]
+    fl_x, fl_y = intrinsic_txt[0], intrinsic_txt[4]
+    cx, cy = intrinsic_txt[2], intrinsic_txt[5]
 
+    # Carica i parametri estrinseci
     extrinsics = np.loadtxt(extrinsics_path)
     poses = extrinsics[:, 1:].reshape(-1, 4, 4)[img_idxs]
     timestamps = extrinsics[:, 0][img_idxs]
 
     return image_paths, poses, timestamps, fl_x, fl_y, cx, cy, W, H
 
-# Funzione per trasformare una posa dalla convenzione di Unity a quella di OpenGL (NerfStudio)
-def transform_pose(pose):
+def transform_pose(pose: np.ndarray) -> np.ndarray:
     """
     Trasforma una posa da Unity (left-handed, Y-up) a OpenGL (right-handed, Y-up).
-    La trasformazione tiene conto che i due sistemi differiscono per:
-    - direzione degli assi X e Y (riflessi)
-    - inversione della traslazione per il cambio di posizione della camera
+    
+    Args:
+        pose: Matrice di posa 4x4 nel formato Unity
+    
+    Returns:
+        np.ndarray: Matrice di posa 4x4 nel formato OpenGL
     """
-    # Estrae rotazione (3x3) e traslazione (3x1) dalla matrice di posa
-    R = pose[:3, :3]  
-    t = pose[:3, 3]   
+    # Estrae rotazione e traslazione
+    R = pose[:3, :3]
+    t = pose[:3, 3]
 
-    # Crea una copia della rotazione che verrà modificata
+    # Crea nuova rotazione e traslazione
     R_new = R.copy()
-
-    # Inverte la traslazione per gestire il cambio di direzione della camera
-    # In Unity la camera guarda verso -Z, in OpenGL verso +Z
     t_new = -t.copy()
 
-    # Matrice di riflessione che:
-    # - Inverte X e Y (primi due elementi della diagonale -1)
-    # - Mantiene Z invariato (ultimo elemento della diagonale 1)
-    # Questo perché la camera in Unity è ruotata di 180° attorno all'asse Z 
-    # rispetto alla camera in OpenGL
+    # Matrice di riflessione per inversione assi X e Y
     R_z_reflection = np.array([
         [-1, 0, 0],
         [0, -1, 0],
@@ -106,28 +150,47 @@ def transform_pose(pose):
     ])
 
     # Applica la riflessione alla rotazione
-    # La moltiplicazione a destra (R * R_z_reflection) è corretta perché 
-    # stiamo trasformando dal sistema di coordinate locale della camera
     R_new = np.dot(R, R_z_reflection)
 
-    # Ricostruisce la nuova matrice di posa 4x4
+    # Ricostruisce la matrice di posa
     pose_new = np.eye(4)
-    pose_new[:3, :3] = R_new  # Inserisce la rotazione trasformata
-    pose_new[:3, 3] = t_new   # Inserisce la traslazione invertita
+    pose_new[:3, :3] = R_new
+    pose_new[:3, 3] = t_new
 
     return pose_new
 
-# Funzione per convertire tutte le pose da Unity a OpenGL (la funzione precedente si riguarda solo una posa)
-def convert_poses(poses):
-    converted_poses = []
-    for pose in poses:        
-        # Applica la trasformazione della posa
-        converted_pose = transform_pose(pose)
-        converted_poses.append(converted_pose)
-    return converted_poses
+def convert_poses(poses: np.ndarray) -> list[np.ndarray]:
+    """
+    Converte un array di pose da Unity a OpenGL.
+    
+    Args:
+        poses: Array di matrici di posa nel formato Unity
+    
+    Returns:
+        list[np.ndarray]: Lista di matrici di posa nel formato OpenGL
+    """
+    return [transform_pose(pose) for pose in poses]
 
-# Funzione per creare il dizionario dei trasformi da esportare in formato JSON
-def create_transforms_dict(image_paths, converted_poses, timestamps, fl_x, fl_y, cx, cy, W, H):
+def create_transforms_dict(image_paths: list[str], 
+                         converted_poses: list[np.ndarray], 
+                         timestamps: np.ndarray,
+                         fl_x: float, fl_y: float, 
+                         cx: float, cy: float, 
+                         W: int, H: int) -> dict:
+    """
+    Crea il dizionario dei trasformi per il formato JSON di NerfStudio.
+    
+    Args:
+        image_paths: Lista dei percorsi delle immagini
+        converted_poses: Lista delle pose convertite
+        timestamps: Array dei timestamps
+        fl_x, fl_y: Parametri focali
+        cx, cy: Centro ottico
+        W, H: Dimensioni dell'immagine
+    
+    Returns:
+        dict: Dizionario del transforms.json nel formato NerfStudio
+    """
     frames = [
         {
             "file_path": f"{path.split('/')[-1]}",
@@ -138,300 +201,376 @@ def create_transforms_dict(image_paths, converted_poses, timestamps, fl_x, fl_y,
     ]
 
     return {
-        "fl_x": fl_x, "fl_y": fl_y, "cx": cx, "cy": cy,
+        "fl_x": fl_x, "fl_y": fl_y, 
+        "cx": cx, "cy": cy,
         "w": W, "h": H,
-        "k1": 0.0, "k2": 0.0, "p1": 0.0, "p2": 0.0,
+        "k1": 0.0, "k2": 0.0, 
+        "p1": 0.0, "p2": 0.0,
         "frames": frames
     }
 
-def convertToOpenGL(rgb_dir, intrinsics_path, extrinsics_path, output_path):
-    image_paths, poses, timestamps, fl_x, fl_y, cx, cy, W, H = load_and_process_data(rgb_dir, intrinsics_path, extrinsics_path)
+def create_transforms_json(rgb_dir: str, 
+                         intrinsics_path: str, 
+                         extrinsics_path: str, 
+                         output_path: str) -> None:
+    """
+    Crea il file transforms.json combinando tutti i dati processati.
     
-    converted_poses = convert_poses(poses)
-    
-    transforms_dict = create_transforms_dict(image_paths, converted_poses, timestamps, fl_x, fl_y, cx, cy, W, H)
+    Args:
+        rgb_dir: Percorso delle immagini RGB
+        intrinsics_path: Percorso del file dei parametri intrinseci
+        extrinsics_path: Percorso del file dei parametri estrinseci
+        output_path: Percorso di output per il file JSON
+    """
+    try:
+        # Carica e processa i dati
+        data = load_and_process_data(rgb_dir, intrinsics_path, extrinsics_path)
+        image_paths, poses, timestamps, fl_x, fl_y, cx, cy, W, H = data
+        
+        # Converte le pose e crea il dizionario
+        converted_poses = convert_poses(poses)
+        transforms_dict = create_transforms_dict(
+            image_paths, converted_poses, timestamps,
+            fl_x, fl_y, cx, cy, W, H
+        )
 
-    with open(join(output_path, "transforms.json"), 'w') as outfile:
-        json.dump(transforms_dict, outfile, indent=4)
+        # Salva il file JSON
+        json_path = os.path.join(output_path, "transforms.json")
+        with open(json_path, 'w', encoding='utf-8') as outfile:
+            json.dump(transforms_dict, outfile, indent=4)
+        
+        logger.info("Processate %d immagini", len(image_paths))
+    except (IOError, ValueError) as e:
+        logger.error("Errore nella creazione del file transforms.json: %s", e)
+        raise
 
-    print(f"Processed {len(image_paths)} images")
+def create_zip_file(folder_path: str, output_folder: str, zip_name: str) -> str:
+    """
+    Crea un file ZIP del contenuto di una cartella.
     
-def create_zip_file(folder_path, output_folder, zip_name):
+    Args:
+        folder_path: Percorso della cartella da comprimere
+        output_folder: Cartella di destinazione del file ZIP
+        zip_name: Nome del file ZIP
+    
+    Returns:
+        str: Percorso completo del file ZIP creato
+    """
     zip_file = os.path.join(output_folder, zip_name)
-    with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zip_ref:
-        for root, _, files in os.walk(folder_path):
-            for file in files:
-                file_path = os.path.join(root, file)
-                zip_ref.write(file_path, os.path.relpath(file_path, folder_path), compress_type=zipfile.ZIP_DEFLATED)
-    return zip_file
+    try:
+        with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zip_ref:
+            for root, _, files in os.walk(folder_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arc_path = os.path.relpath(file_path, folder_path)
+                    zip_ref.write(file_path, arc_path)
+        return zip_file
+    except (subprocess.CalledProcessError, OSError) as e:
+        logger.error("Errore nella creazione del file ZIP: %s", e)
+        raise
 
-def get_latest_output_folder():
-    output_folders = glob.glob("outputs/DATA/nerfacto/*")
+def get_latest_output_folder() -> str:
+    """
+    Trova la cartella di output più recente.
+    
+    Returns:
+        str: Percorso della cartella più recente
+    
+    Raises:
+        ValueError: Se non viene trovata nessuna cartella di output
+    """
+    output_folders = glob.glob(f"outputs/{config.DATA_FOLDER}/nerfacto/*")
     if not output_folders:
-        raise ValueError("No output folder found")
+        raise ValueError("Nessuna cartella di output trovata")
     return max(output_folders, key=os.path.getmtime)
 
-def get_export_command():
+def get_export_command(obb_scaleX: float = 1, obb_scaleY: float = 1, obb_scaleZ: float = 1) -> str:
+    """
+    Genera il comando per esportare il modello NeRF.
+    
+    Args:
+        obb_scaleX/Y/Z: Fattori di scala per il bounding box
+    
+    Returns:
+        str: Comando di esportazione completo
+    """
     latest_folder = get_latest_output_folder()
     return (f"ns-export poisson --load-config {latest_folder}/config.yml "
-            f"--output-dir {EXPORT_FOLDER} --target-num-faces 50000 "
+            f"--output-dir {config.EXPORT_FOLDER} --target-num-faces 50000 "
             "--num-pixels-per-side 2048 --num-points 1000000 --remove-outliers True "
             "--normal-method open3d --obb_center 0.0000000000 0.0000000000 0.0000000000 "
             "--obb_rotation 0.0000000000 0.0000000000 0.0000000000 "
-            "--obb_scale 0.8000000000 0.8000000000 0.8000000000")
+            f"--obb_scale {obb_scaleX} {obb_scaleY} {obb_scaleZ}")
 
-def run_command_in_conda_env(command, output_queue):
-    activate_cmd = (f"call conda activate {CONDA_ENV} && "
-                    if sys.platform == "win32"
-                    else f"source activate {CONDA_ENV} && ")
+def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) -> None:
+    """
+    Esegue un comando nell'ambiente Conda specificato.
+    
+    Args:
+        command: Comando da eseguire
+        output_queue: Coda per l'output del comando
+    """
+    activate_cmd = f"call conda activate {config.CONDA_ENV} && " if sys.platform == "win32" else f"source activate {config.CONDA_ENV} && "
     full_command = activate_cmd + command
 
     try:
         my_env = os.environ.copy()
         my_env["PYTHONIOENCODING"] = "utf-8"
 
-        with subprocess.Popen(full_command, shell=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, bufsize=1,
-                              universal_newlines=True, env=my_env, encoding="utf-8",
-                              errors="replace") as process:
+        with subprocess.Popen(
+            full_command, 
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+            env=my_env,
+            encoding="utf-8",
+            errors="replace"
+        ) as process:
             for line in iter(process.stdout.readline, ""):
                 output_queue.put(line)
 
-            return_code = process.wait()
-            if return_code:
-                raise subprocess.CalledProcessError(return_code, command)
-    except Exception as e:
-        output_queue.put(f"Error: {str(e)}")
+            if process.wait() != 0:
+                raise subprocess.CalledProcessError(process.returncode, command)
+    except (subprocess.CalledProcessError, OSError) as e:
+        output_queue.put(f"Errore: {str(e)}")
+        logger.error("Errore nell'esecuzione del comando: %s", e)
 
-def run_training(output_queue):
-    global is_training, is_completed, training_progress, training_process
+def run_training(output_queue: multiprocessing.Queue) -> None:
+    """
+    Esegue il processo di training del modello NeRF.
+    """
     try:
-        # Execute the data transformation
-        convertToOpenGL(rgb_dir=os.path.join(DATA_FOLDER, "images", "*.jpg"),
-                        intrinsics_path=os.path.join(DATA_FOLDER, "intrinsics.txt"),
-                        extrinsics_path=os.path.join(DATA_FOLDER, "images", "coordinates.txt"),
-                        output_path=DATA_FOLDER)
+        # Crea il file transforms.json
+        create_transforms_json(
+            rgb_dir=os.path.join(config.DATA_FOLDER, "images", "*.jpg"),
+            intrinsics_path=os.path.join(config.DATA_FOLDER, "intrinsics.txt"),
+            extrinsics_path=os.path.join(config.DATA_FOLDER, "images", "coordinates.txt"),
+            output_path=config.DATA_FOLDER
+        )
         
-        # Then run the training command
-        run_command_in_conda_env(NERFSTUDIO_TRAIN_COMMAND, output_queue)
-        training_progress = 100
-    except Exception as e:
-        output_queue.put(f"Error in training process: {str(e)}")
-        logging.error(f"Error in training process: {str(e)}", exc_info=True)
+        # Esegue il comando di training
+        run_command_in_conda_env(config.NERFSTUDIO_TRAIN_COMMAND, output_queue)
+        state.training_progress = 100
+    except (IOError, ValueError, subprocess.CalledProcessError) as e:
+        output_queue.put(f"Errore nel processo di training: {str(e)}")
+        logger.error("Errore nel processo di training: %s", e, exc_info=True)
     finally:
-        is_training = False
-        is_completed = True
+        state.is_training = False
+        state.is_completed = True
         while not output_queue.empty():
             try:
                 output_queue.get_nowait()
             except queue.Empty:
                 break
         output_queue.put(None)
-        if training_process and training_process.is_alive():
-            training_process.terminate()
-            training_process.join()
+        if state.training_process and state.training_process.is_alive():
+            state.training_process.terminate()
+            state.training_process.join()
 
-def run_export(output_queue):
+def run_export(output_queue: multiprocessing.Queue, obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) -> None:
+    """
+    Esegue il processo di esportazione del modello.
+    """
     try:
-        export_command = get_export_command()
+        export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
         run_command_in_conda_env(export_command, output_queue)
     except Exception as e:
-        output_queue.put(f"Error in export process: {str(e)}")
+        output_queue.put(f"Errore nel processo di esportazione: {str(e)}")
+        logger.error("Errore nel processo di esportazione: %s", e)
     finally:
-        output_queue.put(None)  # Signal the end of the process
+        output_queue.put(None)
 
-def execute_script_in_conda_env(script_name, output_queue):
-    try:
-        run_command_in_conda_env(f"python {script_name}", output_queue)
-    except Exception as e:
-        output_queue.put(f"Error in script execution: {str(e)}")
-    finally:
-        output_queue.put(None)  # Signal the end of the process
-
+# Route Flask
 @app.route("/upload_data", methods=["POST"])
 def upload_data():
+    """Gestisce l'upload dei dati tramite file ZIP."""
     if "file" not in request.files:
-        return jsonify({"status": "Error", "message": "No file uploaded"}), 400
+        return jsonify({"status": "Error", "message": "Nessun file caricato"}), 400
 
     file = request.files["file"]
     if file.filename == "":
-        return jsonify({"status": "Error", "message": "No file selected"}), 400
+        return jsonify({"status": "Error", "message": "Nessun file selezionato"}), 400
 
-    if file.filename.endswith(".zip"):
+    if not file.filename.endswith(".zip"):
+        return jsonify({"status": "Error", "message": "Il file deve essere in formato ZIP"}), 400
+
+    try:
         filename = secure_filename(file.filename)
-        temp_zip_path = os.path.join(TEMP_FOLDER, filename)
-        os.makedirs(TEMP_FOLDER, exist_ok=True)
+        temp_zip_path = os.path.join(config.DATA_FOLDER, filename)
         file.save(temp_zip_path)
-        try:
-            with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-                zip_ref.extractall(DATA_FOLDER)
-            os.remove(temp_zip_path)
-            resize_images_to_720p(os.path.join(DATA_FOLDER, "images"))
-            return jsonify({"status": "Success", "message": "File uploaded and extracted successfully"})
-        except Exception as e:
-            logging.error(f"Error extracting zip file: {str(e)}")
-            return jsonify({"status": "Error", "message": "Error extracting zip file"}), 500
-    else:
-        return jsonify({"status": "Error", "message": "File must be a zip file"}), 400
+
+        with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+            zip_ref.extractall(config.DATA_FOLDER)
+        os.remove(temp_zip_path)
+        
+        # Ridimensiona le immagini a 720p
+        resize_images_to_720p(os.path.join(config.DATA_FOLDER, "images"))
+        return jsonify({"status": "Success", "message": "File caricato ed estratto con successo"})
+    except (IOError, ValueError) as e:
+        logger.error(f"Errore nell'upload del file: {e}")
+        return jsonify({"status": "Error", "message": "Errore nell'elaborazione del file"}), 500
 
 @app.route("/start_training")
 def start_training():
-    global training_process, is_training, training_progress, is_completed
-    if not is_training:
-        is_training = True
-        training_progress = 0
-        is_completed = False
+    """Avvia il processo di training."""
+    if not state.is_training:
+        state.is_training = True
+        state.training_progress = 0
+        state.is_completed = False
         output_queue = multiprocessing.Queue()
-        training_process = multiprocessing.Process(target=run_training, args=(output_queue,))
-        training_process.start()
+        state.training_process = multiprocessing.Process(target=run_training, args=(output_queue,))
+        state.training_process.start()
 
-        def print_output():
-            global training_progress, is_training, is_completed
-            while is_training or not is_completed:
+        def monitor_output():
+            while state.is_training or not state.is_completed:
                 try:
                     line = output_queue.get(timeout=1)
                     if line is None:
                         break
-                    logging.info(line.strip())
+                    logger.info(line.strip())
                     if "%" in line and "Loading" not in line:
-                        percentage = line.split("%")[0].split()[-1].strip("(")
                         try:
-                            training_progress = float(percentage)
+                            state.training_progress = float(line.split("%")[0].split()[-1].strip("("))
                         except ValueError:
                             pass
-                except multiprocessing.queues.Empty:
+                except queue.Empty:
                     pass
             
-            # Assicurati che il processo sia terminato
-            if training_process and training_process.is_alive():
-                training_process.terminate()
-                training_process.join()
+            if state.training_process and state.training_process.is_alive():
+                state.training_process.terminate()
+                state.training_process.join()
 
-        output_thread = threading.Thread(target=print_output)
-        output_thread.start()
+        threading.Thread(target=monitor_output).start()
+        return jsonify({"status": "Success", "message": "Training avviato"})
+    return jsonify({"status": "Error", "message": "Training già in corso"}), 400
 
-        return jsonify({"status": "Success", "message": "Training started"})
-    return jsonify({"status": "Error", "message": "Training already in progress"}), 400
-
-@app.route("/start_export")
+@app.route("/start_export", methods=["POST"])
 def start_export():
-    global export_process, is_exporting, export_completed
-    
-    if is_exporting:
-        return jsonify({"status": "Error", "message": "Export already in progress"}), 400
-    
-    is_exporting = True
-    export_completed = False
+    """Avvia il processo di esportazione."""
+    if state.is_exporting:
+        return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 400
+
+    try:
+        obb_scaleX = float(request.args.get("x", 1))
+        obb_scaleY = float(request.args.get("y", 1))
+        obb_scaleZ = float(request.args.get("z", 1))
+    except (TypeError, ValueError):
+        return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
+
+    state.is_exporting = True
+    state.export_completed = False
     output_queue = multiprocessing.Queue()
-    export_process = multiprocessing.Process(target=run_export, args=(output_queue,))
-    export_process.start()
+    state.export_process = multiprocessing.Process(
+        target=run_export, 
+        args=(output_queue, obb_scaleX, obb_scaleY, obb_scaleZ)
+    )
+    state.export_process.start()
 
     def monitor_export():
-        global is_exporting, export_completed
-        while is_exporting:
+        while state.is_exporting:
             try:
                 line = output_queue.get(timeout=1)
                 if line is None:
                     break
-                logging.info(line.strip())
-            except multiprocessing.queues.Empty:
+                logger.info(line.strip())
+            except queue.Empty:
                 pass
         
-        is_exporting = False
-        export_completed = True
-        if export_process and export_process.is_alive():
-            export_process.terminate()
-            export_process.join()
+        state.is_exporting = False
+        state.export_completed = True
+        if state.export_process and state.export_process.is_alive():
+            state.export_process.terminate()
+            state.export_process.join()
 
-    monitor_thread = threading.Thread(target=monitor_export)
-    monitor_thread.start()
-
-    return jsonify({"status": "Success", "message": "Export started"})
+    threading.Thread(target=monitor_export).start()
+    return jsonify({"status": "Success", "message": "Esportazione avviata"})
 
 @app.route("/export_progress")
 def get_export_progress():
-    global is_exporting, export_completed
-    if export_completed:
-        return jsonify({"status": "Success", "message": "Export completed"}), 204
-    elif is_exporting:
-        return jsonify({"status": "In Progress", "message": "Export in progress"})
+    """Controlla lo stato dell'esportazione."""
+    if state.export_completed:
+        return jsonify({"status": "Success", "message": "Esportazione completata"}), 204
+    elif state.is_exporting:
+        return jsonify({"status": "In Progress", "message": "Esportazione in corso"})
     else:
-        return jsonify({"status": "Error", "message": "No export in progress"}), 400
+        return jsonify({"status": "Error", "message": "Nessuna esportazione in corso"}), 400
 
 @app.route("/stop_training")
 def stop_training():
-    global is_training, training_process, is_completed
-    if is_training or training_process:
-        is_training = False
-        is_completed = False
-        if training_process:
+    """Interrompe il processo di training."""
+    if state.is_training or state.training_process:
+        state.is_training = False
+        state.is_completed = False
+        if state.training_process:
             try:
-                training_process.terminate()
-                training_process.join()
+                state.training_process.terminate()
+                state.training_process.join()
             except Exception as e:
-                logging.error(f"Error stopping training: {str(e)}")
-                return jsonify({"status": "Error", "message": "Error stopping training"}), 500
-        return jsonify({"status": "Success", "message": "Training stopped"})
-    return jsonify({"status": "Error", "message": "No training in progress"}), 201
+                logger.error(f"Errore nell'interruzione del training: {e}")
+                return jsonify({"status": "Error", "message": "Errore nell'interruzione del training"}), 500
+        return jsonify({"status": "Success", "message": "Training interrotto"})
+    return jsonify({"status": "Error", "message": "Nessun training in corso"}), 201
 
 @app.route("/training_progress")
 def get_training_progress():
-    global training_progress, is_training, is_completed, training_process
-    logging.info(f"Progress: {training_progress}, In training: {is_training}, Completed: {is_completed}")
-    if training_progress == 100 or is_completed:
-        is_training = False
-        is_completed = True
-        if training_process and training_process.is_alive():
-            training_process.terminate()
-            training_process.join()
-        return jsonify({"status": "Success", "progress": 100, "message": "Training completed"}), 204
-    if not is_training:
-        return jsonify({"status": "Error", "message": "No training in progress"}), 400
-    return jsonify({"status": "In Progress", "progress": training_progress})
+    """Controlla lo stato del training."""
+    if state.training_progress == 100 or state.is_completed:
+        state.is_training = False
+        state.is_completed = True
+        if state.training_process and state.training_process.is_alive():
+            state.training_process.terminate()
+            state.training_process.join()
+        return jsonify({"status": "Success", "progress": 100, "message": "Training completato"}), 204
+    if not state.is_training:
+        return jsonify({"status": "Error", "message": "Nessun training in corso"}), 400
+    return jsonify({"status": "In Progress", "progress": state.training_progress})
 
 @app.route("/get_mesh")
 def get_mesh():
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-    file_path = create_zip_file(EXPORT_FOLDER, TEMP_FOLDER, "mesh.zip")
-    if os.path.exists(file_path):
-        return send_file(file_path, as_attachment=True), 200
-    else:
-        return jsonify({"status": "Error", "message": "Mesh file not found"}), 404
+    """Scarica il modello 3D esportato."""
+    try:
+        file_path = create_zip_file(config.EXPORT_FOLDER, config.DATA_FOLDER, "mesh.zip")
+        if os.path.exists(file_path):
+            return send_file(file_path, as_attachment=True), 200
+        else:
+            return jsonify({"status": "Error", "message": "File mesh non trovato"}), 404
+    except Exception as e:
+        logger.error(f"Errore nel recupero del mesh: {e}")
+        return jsonify({"status": "Error", "message": "Errore nel recupero del mesh"}), 500
 
-# Rotta per eliminare tutti i dati caricati sul server
 @app.route("/delete_server", methods=["DELETE"])
 def delete_server():
-    global is_training, is_exporting
-
-    if is_training or is_exporting:
-        return jsonify({"status": "Error", "message": "Non è possibile al momento eliminare il server. Training o export in corso."}), 400
+    """Elimina tutti i dati dal server."""
+    if state.is_training or state.is_exporting:
+        return jsonify({
+            "status": "Error", 
+            "message": "Non è possibile eliminare il server. Training o export in corso."
+        }), 400
 
     try:
-        for root, dirs, files in os.walk(DATA_FOLDER, topdown=False):
+        for root, dirs, files in os.walk(config.DATA_FOLDER, topdown=False):
             for file in files:
                 os.remove(os.path.join(root, file))
             for dir in dirs:
                 os.rmdir(os.path.join(root, dir))
-        return jsonify({"status": "Success", "message": "All data deleted"}), 200
+        return jsonify({"status": "Success", "message": "Dati eliminati con successo"}), 200
     except Exception as e:
-        logging.error(f"Error deleting data: {str(e)}")
-        return jsonify({"status": "Error", "message": "Error deleting data"}), 500
+        logger.error(f"Errore nell'eliminazione dei dati: {e}")
+        return jsonify({"status": "Error", "message": "Errore nell'eliminazione dei dati"}), 500
 
 if __name__ == "__main__":
-    # Encoding configuration
+    # Configurazione encoding per Windows
     if sys.platform == "win32":
         os.system("chcp 65001")
 
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-    try:
-        locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
-    except locale.Error:
-        try:
-            locale.setlocale(locale.LC_ALL, "C.UTF-8")
-        except locale.Error:
-            logging.warning("Unable to set UTF-8 locale. Some characters may not display correctly.")
-
+    # Inizializza il multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
+    
+    # Avvia il server
     app.run(debug=True, host="0.0.0.0", port=5000)
