@@ -12,7 +12,6 @@ public class ClearScreenshotFolder : MonoBehaviour
     public PressableButton Positive; // Bottone di conferma eliminazione
     public PressableButton Negative; // Bottone di annullamento eliminazione
     private PressableButton clearButton; // Bottone Delete Dataset
-    public const string ServerUrl = "http://172.24.150.157:5000";
 
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
@@ -79,15 +78,12 @@ public class ClearScreenshotFolder : MonoBehaviour
         {
             UpdateStatus($"Error clearing folder: {e.Message}");
         }
-
-        // Chiama qui il metodo per eliminare i marker se necessario
-        ClearMarkers();
     }
 
     // Annulla l’eliminazione del dataset
     private IEnumerator CancelServerFolder()
     {
-        yield return SendRequestWithRetry($"{ServerUrl}/delete_server", "DELETE");
+        yield return SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/delete_server", "DELETE");
     }
 
     private void ClearFolder()
@@ -107,13 +103,6 @@ public class ClearScreenshotFolder : MonoBehaviour
         }
         Debug.Log($"ClearScreenshotFolder: {message}");
     }
-
-    // Metodo per eliminare i marker
-    private void ClearMarkers()
-    {
-        // Aggiungi qui il codice per cancellare i marker, se necessario
-    }
-
 
 private IEnumerator SendRequestWithRetry(string url, string method, System.Action<UnityWebRequest> callback = null)
 {

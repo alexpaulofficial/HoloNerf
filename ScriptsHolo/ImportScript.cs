@@ -18,8 +18,6 @@ public class DownloadImportMeshScript : MonoBehaviour
 
     // Nuova lista per tracciare le mesh importate
     private List<GameObject> importedMeshes = new List<GameObject>(); 
-
-    public const string ServerUrl = "http://172.24.150.157:5000";
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
 
@@ -44,7 +42,7 @@ public class DownloadImportMeshScript : MonoBehaviour
         string meshPath = Path.Combine(Application.temporaryCachePath, "mesh.zip");
 
         // Scarica la mesh con un retry in caso di fallimento
-        yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/get_mesh", "GET", null, meshPath));
+        yield return StartCoroutine(SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/get_mesh", "GET", null, meshPath));
         statusText.text = $"Import mesh in corso";
         // Estrai il file ZIP
         FastZip fastZip = new FastZip();

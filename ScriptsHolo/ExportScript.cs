@@ -18,7 +18,6 @@ public class ExportMeshScript : MonoBehaviour
     [SerializeField] private TextMeshProUGUI sliderZText;
 
     private bool isExporting = false;
-    public const string ServerUrl = "http://172.24.150.157:5000";
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
 
@@ -67,7 +66,7 @@ public class ExportMeshScript : MonoBehaviour
         statusText.text = "Starting mesh export...";
 
         // Use POST with JSON in the body
-        StartCoroutine(SendRequestWithRetry($"{ServerUrl}/start_export", "POST", OnStartExportComplete, jsonData));
+        StartCoroutine(SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/start_export", "POST", OnStartExportComplete, jsonData));
     }
 
     private void OnStartExportComplete(UnityWebRequest www)
@@ -88,7 +87,7 @@ public class ExportMeshScript : MonoBehaviour
         isExporting = true;
         while (isExporting)
         {
-            yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/export_progress", "GET", OnExportProgressReceived));
+            yield return StartCoroutine(SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/export_progress", "GET", OnExportProgressReceived));
             yield return new WaitForSeconds(5f);
         }
     }

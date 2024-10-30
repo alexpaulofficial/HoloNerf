@@ -11,7 +11,7 @@ public class StartStopTrainingScript : MonoBehaviour
     [SerializeField] private PressableButton trainingButton;
     [SerializeField] private TextMeshProUGUI statusText;
     private TextMeshPro buttonText;
-    public const string ServerUrl = "http://172.24.150.157:5000";
+    [SerializeField] public static string ServerUrl = "http://172.24.150.157:5000";
     private bool isTraining = false;
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
