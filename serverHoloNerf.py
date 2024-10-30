@@ -147,8 +147,8 @@ def convertToOpenGL(rgb_dir, intrinsics_path, extrinsics_path, output_path):
 
     print(f"Processed {len(image_paths)} images")
     
-def create_zip_file(folder_path):
-    zip_file = os.path.join(TEMP_FOLDER, "mesh.zip")
+def create_zip_file(folder_path, output_folder, zip_name):
+    zip_file = os.path.join(output_folder, zip_name)
     with zipfile.ZipFile(zip_file, "w", zipfile.ZIP_DEFLATED) as zip_ref:
         for root, _, files in os.walk(folder_path):
             for file in files:
@@ -383,12 +383,25 @@ def get_training_progress():
 @app.route("/get_mesh")
 def get_mesh():
     os.makedirs(TEMP_FOLDER, exist_ok=True)
-    file_path = create_zip_file(EXPORT_FOLDER)
+    file_path = create_zip_file(EXPORT_FOLDER, TEMP_FOLDER, "mesh.zip")
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True), 200
     else:
         return jsonify({"status": "Error", "message": "Mesh file not found"}), 404
-    
+
+# Rotta per eliminare tutti i dati caricati sul server
+@app.route("/delete_server", methods=["DELETE"])
+def delete_server():
+    try:
+        for root, dirs, files in os.walk(DATA_FOLDER, topdown=False):
+            for file in files:
+                os.remove(os.path.join(root, file))
+            for dir in dirs:
+                os.rmdir(os.path.join(root, dir))
+        return jsonify({"status": "Success", "message": "All data deleted"}), 200
+    except Exception as e:
+        logging.error(f"Error deleting data: {str(e)}")
+        return jsonify({"status": "Error", "message": "Error deleting data"}), 500
 
 if __name__ == "__main__":
     # Encoding configuration
