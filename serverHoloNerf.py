@@ -329,7 +329,7 @@ def get_latest_output_folder() -> str:
         raise ValueError("Nessuna cartella di output trovata")
     return max(output_folders, key=os.path.getmtime)
 
-def get_export_command(obb_scaleX: float = 1, obb_scaleY: float = 1, obb_scaleZ: float = 1) -> str:
+def get_export_command(obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) -> str:
     """
     Genera il comando per esportare il modello NeRF.
     
