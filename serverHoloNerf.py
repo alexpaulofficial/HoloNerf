@@ -130,7 +130,7 @@ def resize_images_to_720p(folder_path: str) -> None:
                     file_path = os.path.join(root, file)
                     with Image.open(file_path) as img:
                         if img.size != config.IMAGE_TARGET_SIZE:
-                            img = img.resize(config.IMAGE_TARGET_SIZE, Image.LANCZOS)
+                            img = img.resize(config.IMAGE_TARGET_SIZE, Image.Resampling.LANCZOS)
                             img.save(file_path)
                 except (IOError, ValueError) as e:
                     logger.error("Errore nel processare l'immagine %s: %s", file_path, e)
@@ -501,9 +501,9 @@ def start_export():
 
     try:
         data = request.get_json()
-        obb_scale_x = float(data.get("x", 1))
-        obb_scale_y = float(data.get("y", 1))
-        obb_scale_z = float(data.get("z", 1))
+        obb_scale_x = float(data.get("x"))
+        obb_scale_y = float(data.get("y"))
+        obb_scale_z = float(data.get("z"))
     except (TypeError, ValueError):
         return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
 

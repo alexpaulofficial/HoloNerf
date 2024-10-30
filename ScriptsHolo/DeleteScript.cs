@@ -4,136 +4,149 @@ using MixedReality.Toolkit.UX;
 using TMPro;
 using UnityEngine.Networking;
 using System.Collections;
+using Newtonsoft.Json;
 
 public class ClearScreenshotFolder : MonoBehaviour
 {
-    public TextMeshProUGUI statusText; // Riferimento al testo di stato (opzionale)
-    public GameObject CanvasDialog; // Pannello con finestra di dialogo
-    public PressableButton Positive; // Bottone di conferma eliminazione
-    public PressableButton Negative; // Bottone di annullamento eliminazione
-    private PressableButton clearButton; // Bottone Delete Dataset
+    [Header("UI References")]
+    [SerializeField] private TextMeshProUGUI statusText;
+    [SerializeField] private GameObject dialogCanvas;
+    [SerializeField] private PressableButton confirmButton;
+    [SerializeField] private PressableButton cancelButton;
+    
+    [Header("Configuration")]
+    [SerializeField] private int maxRetries = 5;
+    [SerializeField] private float retryDelay = 5f;
+    
+    private PressableButton clearButton;
+    private bool isDeleting;
 
-    private const int MaxRetries = 5;
-    private const float RetryDelay = 5f;
+    // Struttura per deserializzare le risposte del server
+    private class ServerResponse
+    {
+        public string status { get; set; }
+        public string message { get; set; }
+    }
 
     private void Start()
     {
+        SetupButtons();
+        dialogCanvas.SetActive(false);
+    }
+
+    private void SetupButtons()
+    {
         clearButton = GetComponent<PressableButton>();
-        if (clearButton != null)
+        if (!clearButton)
         {
-            // Imposta il listener per mostrare la finestra di dialogo
-            clearButton.OnClicked.AddListener(ShowConfirmationDialog);
-        }
-        else
-        {
-            Debug.LogError("ClearScreenshotFolder: PressableButton component not found on this GameObject.");
+            Debug.LogError("DeleteScript: Componente PressableButton mancante");
+            enabled = false;
+            return;
         }
 
-        // Imposta i listener per i bottoni della finestra di dialogo
-        if (Positive != null)
-        {
-            Positive.OnClicked.AddListener(ConfirmClearFolder);
-        }
-        if (Negative != null)
-        {
-            Negative.OnClicked.AddListener(ClearFolder);
-        }
-
-        // Nascondi la finestra di dialogo all’avvio
-        CanvasDialog.SetActive(false);
+        clearButton.OnClicked.AddListener(ShowConfirmationDialog);
+        confirmButton?.OnClicked.AddListener(HandleConfirmDelete);
+        cancelButton?.OnClicked.AddListener(() => dialogCanvas.SetActive(false));
     }
 
-    // Mostra la finestra di dialogo di conferma
-    private void ShowConfirmationDialog()
+    private void ShowConfirmationDialog() => dialogCanvas.SetActive(true);
+
+    private void HandleConfirmDelete()
     {
-        CanvasDialog.SetActive(true); // Mostra la finestra di dialogo
+        if (isDeleting) return;
+        isDeleting = true;
+        StartCoroutine(DeleteDatasetRoutine());
     }
 
-    // Conferma l’eliminazione del dataset
-    private void ConfirmClearFolder()
+    private IEnumerator DeleteDatasetRoutine()
     {
-        CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
+        // Verifica stato del server prima di procedere
+        yield return StartCoroutine(SendServerRequest($"{StartStopTrainingScript.ServerUrl}/delete_server", 
+            (response) => {
+                if (response.status == "Error")
+                {
+                    UpdateStatus($"Impossibile eliminare: {response.message}");
+                    isDeleting = false;
+                    dialogCanvas.SetActive(false);
+                    return;
+                }
+                
+                DeleteLocalFolder();
+            }));
+    }
+
+    private void DeleteLocalFolder()
+    {
         string folderPath = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
-
+        
         try
         {
             if (Directory.Exists(folderPath))
             {
-                foreach (string file in Directory.GetFiles(folderPath))
-                {
-                    File.Delete(file);
-                }
-                foreach (string subdirectory in Directory.GetDirectories(folderPath))
-                {
-                    Directory.Delete(subdirectory, true);
-                }
-                UpdateStatus("Screenshot folder cleared successfully.");
-            }
-            else
-            {
-                UpdateStatus("Screenshot folder does not exist.");
+                Directory.Delete(folderPath, true);
+                UpdateStatus("Dataset eliminato con successo");
             }
         }
-        catch (System.Exception e)
+        catch (IOException ex)
         {
-            UpdateStatus($"Error clearing folder: {e.Message}");
+            Debug.LogError($"Errore eliminazione cartella: {ex.Message}");
+            UpdateStatus("Errore durante l'eliminazione dei file locali");
+        }
+        finally
+        {
+            isDeleting = false;
+            dialogCanvas.SetActive(false);
         }
     }
 
-    // Annulla l’eliminazione del dataset
-    private IEnumerator CancelServerFolder()
+    private IEnumerator SendServerRequest(string url, System.Action<ServerResponse> callback)
     {
-        yield return SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/delete_server", "DELETE");
-    }
+        int retries = 0;
+        
+        while (retries < maxRetries)
+        {
+            using (UnityWebRequest www = UnityWebRequest.Delete(url))
+            {
+                www.downloadHandler = new DownloadHandlerBuffer();
+                
+                yield return www.SendWebRequest();
 
-    private void ClearFolder()
-    { 
-        CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
-        StartCoroutine(CancelServerFolder());
-        UpdateStatus("Dataset deletion canceled.");
+                if (www.result == UnityWebRequest.Result.Success)
+                {
+                    try
+                    {
+                        var response = JsonConvert.DeserializeObject<ServerResponse>(www.downloadHandler.text);
+                        callback(response);
+                        yield break;
+                    }
+                    catch (JsonException)
+                    {
+                        Debug.LogError("Errore parsing risposta server");
+                    }
+                }
 
+                retries++;
+                if (retries < maxRetries)
+                {
+                    yield return new WaitForSeconds(retryDelay);
+                }
+            }
+        }
+
+        UpdateStatus("Errore di comunicazione con il server");
     }
-    
 
     private void UpdateStatus(string message)
     {
-        if (statusText != null)
-        {
-            statusText.text = message;
-        }
-        Debug.Log($"ClearScreenshotFolder: {message}");
+        if (statusText) statusText.text = message;
+        Debug.Log($"DeleteScript: {message}");
     }
 
-private IEnumerator SendRequestWithRetry(string url, string method, System.Action<UnityWebRequest> callback = null)
-{
-    int retries = 0;
-    bool success = false;
-
-    while (!success && retries < MaxRetries)
+    private void OnDestroy()
     {
-        using (UnityWebRequest www = new UnityWebRequest(url, method))
-        {
-            www.downloadHandler = new DownloadHandlerBuffer();
-            yield return www.SendWebRequest();
-
-            if (www.result == UnityWebRequest.Result.Success || www.responseCode == 204)
-            {
-                success = true;
-                if (callback != null)
-                    callback(www);
-            }
-            else
-            {
-                retries++;
-                yield return new WaitForSeconds(RetryDelay);
-            }
-        }
+        // Cleanup listeners
+        clearButton?.OnClicked.RemoveAllListeners();
+        confirmButton?.OnClicked.RemoveAllListeners();
+        cancelButton?.OnClicked.RemoveAllListeners();
     }
-
-    if (!success)
-    {
-        statusText.text = "Error: Request failed. Please try again.";
-    }
-}
-
 }
