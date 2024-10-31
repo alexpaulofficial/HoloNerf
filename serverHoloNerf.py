@@ -400,12 +400,14 @@ def run_training(output_queue: multiprocessing.Queue) -> None:
         # Esegue il comando di training
         run_command_in_conda_env(config.NERFSTUDIO_TRAIN_COMMAND, output_queue)
         state.training_progress = 100
-    except (IOError, ValueError, subprocess.CalledProcessError) as e:
+    
+    except Exception as e:
         output_queue.put(f"Errore nel processo di training: {str(e)}")
         logger.error("Errore nel processo di training: %s", e, exc_info=True)
     finally:
         state.is_training = False
         state.is_completed = True
+        # Svuota la coda
         while not output_queue.empty():
             try:
                 output_queue.get_nowait()
@@ -415,19 +417,6 @@ def run_training(output_queue: multiprocessing.Queue) -> None:
         if state.training_process and state.training_process.is_alive():
             state.training_process.terminate()
             state.training_process.join()
-
-def run_export(output_queue: multiprocessing.Queue, obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) -> None:
-    """
-    Esegue il processo di esportazione del modello.
-    """
-    try:
-        export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
-        run_command_in_conda_env(export_command, output_queue)
-    except (subprocess.CalledProcessError, OSError, ValueError) as e:
-        output_queue.put(f"Errore nel processo di esportazione: {str(e)}")
-        logger.error("Errore nel processo di esportazione: %s", e)
-    finally:
-        output_queue.put(None)
 
 # Route Flask
 @app.route("/upload_data", methods=["POST"])
@@ -466,8 +455,12 @@ def start_training():
         state.is_training = True
         state.training_progress = 0
         state.is_completed = False
-        output_queue = multiprocessing.Queue()
-        state.training_process = multiprocessing.Process(target=run_training, args=(output_queue,))
+        manager = multiprocessing.Manager()
+        output_queue = manager.Queue()
+        state.training_process = multiprocessing.Process(
+            target=run_training, 
+            args=(output_queue,)
+        )
         state.training_process.start()
 
         def monitor_output():
@@ -478,8 +471,9 @@ def start_training():
                         break
                     logger.info(line.strip())
                     if "%" in line and "Loading" not in line:
+                        percentage = line.split("%")[0].split()[-1].strip("(")
                         try:
-                            state.training_progress = float(line.split("%")[0].split()[-1].strip("("))
+                            state.training_progress = float(percentage)
                         except ValueError:
                             pass
                 except queue.Empty:
@@ -493,6 +487,19 @@ def start_training():
         return jsonify({"status": "Success", "message": "Training avviato"})
     return jsonify({"status": "Error", "message": "Training già in corso"}), 400
 
+def run_export(output_queue: multiprocessing.Queue, obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) -> None:
+    """
+    Esegue il processo di esportazione del modello.
+    """
+    try:
+        export_command = get_export_command(obb_scaleX, obb_scaleY, obb_scaleZ)
+        run_command_in_conda_env(export_command, output_queue)
+    except Exception as e:
+        output_queue.put(f"Errore nel processo di esportazione: {str(e)}")
+        logger.error("Errore nel processo di esportazione: %s", e)
+    finally:
+        output_queue.put(None)
+
 @app.route("/start_export", methods=["POST"])
 def start_export():
     """Avvia il processo di esportazione."""
@@ -500,15 +507,14 @@ def start_export():
         return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 400
 
     try:
-        data = request.get_json()
-        obb_scale_x = float(data.get("x"))
-        obb_scale_y = float(data.get("y"))
-        obb_scale_z = float(data.get("z"))
-    except (TypeError, ValueError):
+        obb_scale_x = request.args.get("x", type=float)
+        obb_scale_y = request.args.get("y", type=float)
+        obb_scale_z = request.args.get("z", type=float)
+        
+        if any(x is None for x in [obb_scale_x, obb_scale_y, obb_scale_z]):
+            return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 400
+    except ValueError:
         return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
-
-    # Debugging: log request parameters
-    logger.info("Received export parameters: x=%s, y=%s, z=%s", obb_scale_x, obb_scale_y, obb_scale_z)
 
     state.is_exporting = True
     state.export_completed = False
@@ -536,11 +542,6 @@ def start_export():
             state.export_process.join()
 
     threading.Thread(target=monitor_export).start()
-
-    # Debugging: log the final export command
-    export_command = get_export_command(obb_scale_x, obb_scale_y, obb_scale_z)
-    logger.info("Export command: %s", export_command)
-
     return jsonify({"status": "Success", "message": "Esportazione avviata"})
 
 @app.route("/export_progress")
