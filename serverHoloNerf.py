@@ -455,7 +455,6 @@ def upload_data():
         
         # Ridimensiona le immagini a 720p
         resize_images(os.path.join(config.DATA_FOLDER, "images"))
-        time.sleep(10)
         return jsonify({"status": "Success", "message": "File caricato ed estratto con successo"})
     except (IOError, ValueError) as e:
         logger.error("Errore nell'upload del file: %s", e)

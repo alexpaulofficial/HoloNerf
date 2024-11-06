@@ -1,274 +1,209 @@
 using UnityEngine;
 using UnityEngine.Networking;
-using System;
 using System.Collections;
 using System.IO;
-using System.Threading.Tasks;
 using TMPro;
 using MixedReality.Toolkit.UX;
 using System.IO.Compression;
 
 public class StartStopTrainingScript : MonoBehaviour
 {
-   [SerializeField] private PressableButton trainingButton;
-   [SerializeField] private TextMeshProUGUI statusText;
-   private TextMeshPro buttonText;
-   
-   [SerializeField] public static string ServerUrl = "http://172.24.150.157:5000";
-   private const int MaxRetries = 5;
-   private const float RetryDelay = 5f;
-   private const float ProgressCheckInterval = 5f;
+    [SerializeField] private PressableButton trainingButton;
+    [SerializeField] private TextMeshProUGUI statusText;
+    private TextMeshPro buttonText;
+    [SerializeField] public static string ServerUrl = "http://172.24.150.157:5000";
+    private bool isTraining = false;
+    private const int MaxRetries = 5;
+    private const float RetryDelay = 5f;
 
-   private bool isTraining = false;
-   private bool isUploading = false;
-   private float currentProgress = 0f;
+    private void Start()
+    {
+        if (trainingButton != null)
+            trainingButton.OnClicked.AddListener(ToggleTraining);
 
-   private void Start()
-   {
-       InitializeUI();
-   }
+        statusText.text = "Ready to train!";
+        UpdateButtonText();
+    }
 
-   private void InitializeUI()
-   {
-       if (trainingButton != null)
-       {
-           trainingButton.OnClicked.AddListener(ToggleTraining);
-           buttonText = trainingButton.GetComponentInChildren<TextMeshPro>();
-       }
-       
-       UpdateStatus("Ready to train!");
-       UpdateButtonText();
-   }
+    private void ToggleTraining()
+    {
+        if (isTraining)
+            StopTraining();
+        else
+            StartTraining();
+    }
 
-   private void ToggleTraining()
-   {
-       if (isUploading)
-       {
-           UpdateStatus("Upload in corso, attendere...");
-           return;
-       }
+    private void StartTraining()
+    {
+        isTraining = true;
+        UpdateButtonText();
+        statusText.text = "Preparing data...";
+        StartCoroutine(TrainingProcess());
+    }
 
-       if (isTraining)
-           StopTraining();
-       else
-           StartTraining();
-   }
+    private void StopTraining()
+    {
+        isTraining = false;
+        UpdateButtonText();
+        statusText.text = "Stopping training...";
+        StartCoroutine(SendRequestWithRetry($"{ServerUrl}/stop_training", "GET", OnStopTrainingComplete));
+    }
 
-   private async void StartTraining()
-   {
-       try
-       {
-           isTraining = true;
-           isUploading = true;
-           UpdateButtonText();
-           UpdateStatus("Preparing data...");
+    private void OnStopTrainingComplete(UnityWebRequest www)
+    {
+        statusText.text = "Training stopped.";
+    }
 
-           string zipPath = await CreateZipFileAsync();
-           bool uploadSuccess = await UploadZipFileAsync(zipPath);
+    private void UpdateButtonText()
+    {
+        if (trainingButton != null)
+        {
+            buttonText = trainingButton.GetComponentInChildren<TextMeshPro>();
+            if (buttonText != null)
+                buttonText.text = isTraining ? "Stop Training" : "Start Training";
+        }
+    }
 
-           if (!uploadSuccess)
-           {
-               HandleError("Upload failed");
-               return;
-           }
+     private IEnumerator TrainingProcess()
+    {
+        string zipPath = CreateZipFile();
+        if (zipPath != null)  // Verifichiamo che la creazione dello zip sia avvenuta con successo
+        {
+            yield return StartCoroutine(UploadZipFile(zipPath));
+            yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/start_training", "GET", OnStartTrainingComplete));
+        }
+        else
+        {
+            statusText.text = "Error: Could not create zip file.";
+            isTraining = false;
+            UpdateButtonText();
+        }
+    }
 
-           bool trainingStarted = await StartTrainingProcessAsync();
-           if (trainingStarted)
-           {
-               StartCoroutine(MonitorTrainingProgress());
-           }
-       }
-       catch (Exception e)
-       {
-           HandleError($"Training error: {e.Message}");
-       }
-       finally
-       {
-           isUploading = false;
-       }
-   }
+   private string CreateZipFile()
+    {
+        string captureFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE");
+        string zipPath = Path.Combine(Application.temporaryCachePath, "data.zip");
 
-   private async void StopTraining()
-   {
-       try
-       {
-           UpdateStatus("Stopping training...");
-           bool success = await SendRequestAsync($"{ServerUrl}/stop_training", "GET");
-           
-           if (success)
-           {
-               isTraining = false;
-               UpdateStatus("Training stopped.");
-               UpdateButtonText();
-           }
-           else
-           {
-               HandleError("Failed to stop training");
-           }
-       }
-       catch (Exception e)
-       {
-           HandleError($"Stop training error: {e.Message}");
-       }
-   }
+        // Se esiste già un file zip precedente, lo eliminiamo
+        if (File.Exists(zipPath))
+        {
+            File.Delete(zipPath);
+        }
 
-   private async Task<string> CreateZipFileAsync()
-   {
-       string captureFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE");
-       string zipPath = Path.Combine(Application.temporaryCachePath, "data.zip");
+        try
+        {
+            // Utilizziamo ZipFile.CreateFromDirectory che è più leggero e integrato nel framework
+            ZipFile.CreateFromDirectory(captureFolder, zipPath, CompressionLevel.Fastest, false);
+            return zipPath;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Error creating zip file: {e.Message}");
+            statusText.text = "Error: Failed to create zip file.";
+            isTraining = false;
+            UpdateButtonText();
+            return null;
+        }
+    }
 
-       try
-       {
-           await Task.Run(() => {
-               if (File.Exists(zipPath))
-                   File.Delete(zipPath);
-               
-               ZipFile.CreateFromDirectory(
-                   captureFolder,
-                   zipPath,
-                   System.IO.Compression.CompressionLevel.Fastest,
-                   false
-               );
-           });
+    private IEnumerator UploadZipFile(string zipPath)
+    {
+        WWWForm form = new WWWForm();
+        form.AddBinaryData("file", File.ReadAllBytes(zipPath), "data.zip", "application/zip");
+        yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/upload_data", "POST", OnUploadComplete, null, form));
+    }
 
-           return zipPath;
-       }
-       catch (Exception e)
-       {
-           throw new Exception($"Zip creation failed: {e.Message}");
-       }
-   }
+    private void OnUploadComplete(UnityWebRequest www)
+    {
+        if (www.responseCode == 200)
+            statusText.text = "Data uploaded. Executing transform script...";
+        else
+        {
+            statusText.text = "Error: Failed to upload data.";
+            isTraining = false;
+            UpdateButtonText();
+        }
+    }
 
-   private async Task<bool> UploadZipFileAsync(string zipPath)
-   {
-       try
-       {
-           WWWForm form = new WWWForm();
-           byte[] fileData = await File.ReadAllBytesAsync(zipPath);
-           form.AddBinaryData("file", fileData, "data.zip", "application/zip");
+    private void OnStartTrainingComplete(UnityWebRequest www)
+    {
+        if (www.responseCode == 200)
+        {
+            statusText.text = "Training started. Monitoring progress...";
+            StartCoroutine(MonitorTrainingProgress());
+        }
+        else
+        {
+            statusText.text = "Error: Failed to start training.";
+            isTraining = false;
+            UpdateButtonText();
+        }
+    }
 
-           return await SendRequestAsync($"{ServerUrl}/upload_data", "POST", form);
-       }
-       catch (Exception e)
-       {
-           throw new Exception($"Upload failed: {e.Message}");
-       }
-   }
+    private IEnumerator MonitorTrainingProgress()
+    {
+        while (isTraining)
+        {
+            yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/training_progress", "GET", OnProgressReceived));
+            yield return new WaitForSeconds(5f);
+        }
+    }
 
-   private async Task<bool> SendRequestAsync(string url, string method, WWWForm form = null)
-   {
-       UnityWebRequest request;
-       if (form != null)
-           request = UnityWebRequest.Post(url, form);
-       else
-           request = new UnityWebRequest(url, method);
+    private void OnProgressReceived(UnityWebRequest www)
+    {
+        if (www.responseCode == 204)
+        {
+            isTraining = false;
+            UpdateButtonText();
+            statusText.text = "Training completed!";
+        }
+        else if (www.responseCode == 200)
+        {
+            ProgressData progressData = JsonUtility.FromJson<ProgressData>(www.downloadHandler.text);
+            statusText.text = $"Training progress: {progressData.progress}%";
+        }
+    }
 
-       request.downloadHandler = new DownloadHandlerBuffer();
-       
-       for (int i = 0; i < MaxRetries; i++)
-       {
-           try {
-               UnityWebRequestAsyncOperation operation = request.SendWebRequest();
-               while (!operation.isDone)
-                   await Task.Yield();
+    private IEnumerator SendRequestWithRetry(string url, string method, System.Action<UnityWebRequest> callback = null, string downloadPath = null, WWWForm form = null)
+    {
+        int retries = 0;
+        bool success = false;
 
-               if (request.result == UnityWebRequest.Result.Success)
-                   return true;
-           }
-           catch {
-               if (i == MaxRetries - 1) throw;
-           }
-           await Task.Delay((int)(RetryDelay * 1000));
-       }
-       
-       return false;
-   }
+        while (!success && retries < MaxRetries)
+        {
+            using (UnityWebRequest www = (form != null) ? UnityWebRequest.Post(url, form) : new UnityWebRequest(url, method))
+            {
+                if (downloadPath != null)
+                    www.downloadHandler = new DownloadHandlerFile(downloadPath);
+                else if (form == null)
+                    www.downloadHandler = new DownloadHandlerBuffer();
 
-   private IEnumerator MonitorTrainingProgress()
-   {
-       while (isTraining)
-       {
-           UnityWebRequest www = UnityWebRequest.Get($"{ServerUrl}/training_progress");
-           yield return www.SendWebRequest();
+                yield return www.SendWebRequest();
 
-           try
-           {
-               if (www.result == UnityWebRequest.Result.Success)
-               {
-                   ProcessProgressResponse(www);
-               }
-               else if (www.responseCode == 204)
-               {
-                   CompleteTraining();
-                   www.Dispose();
-                   yield break;
-               }
-               else
-               {
-                   HandleError($"Progress check failed: {www.error}");
-               }
-           }
-           catch (Exception e)
-           {
-               HandleError($"Progress monitoring error: {e.Message}");
-           }
-           finally
-           {
-               www.Dispose();
-           }
+                if (www.responseCode != 0)
+                {
+                    success = true;
+                    if (callback != null)
+                        callback(www);
+                }
+                else
+                {
+                    retries++;
+                    yield return new WaitForSeconds(RetryDelay);
+                }
+            }
+        }
 
-           yield return new WaitForSeconds(ProgressCheckInterval);
-       }
-   }
+        if (!success)
+        {
+            statusText.text = "Error: Request failed. Please try again.";
+        }
+    }
 
-   private async Task<bool> StartTrainingProcessAsync()
-   {
-       try {
-           return await SendRequestAsync($"{ServerUrl}/start_training", "GET");
-       }
-       catch (Exception e) {
-           throw new Exception($"Failed to start training: {e.Message}");
-       }
-   }
-
-   private void ProcessProgressResponse(UnityWebRequest www)
-   {
-       var progressData = JsonUtility.FromJson<ProgressData>(www.downloadHandler.text);
-       currentProgress = progressData.progress;
-       UpdateStatus($"Training progress: {currentProgress}%");
-   }
-
-   private void CompleteTraining()
-   {
-       isTraining = false;
-       UpdateStatus("Training completed!");
-       UpdateButtonText();
-   }
-
-   private void HandleError(string message)
-   {
-       Debug.LogError(message);
-       isTraining = false;
-       isUploading = false;
-       UpdateStatus($"Error: {message}");
-       UpdateButtonText();
-   }
-
-   private void UpdateStatus(string message)
-   {
-       if (statusText != null)
-           statusText.text = message;
-   }
-
-   private void UpdateButtonText()
-   {
-       if (buttonText != null)
-           buttonText.text = isTraining ? "Stop Training" : "Start Training";
-   }
-
-   [Serializable]
-   private class ProgressData
-   {
-       public float progress;
-   }
+    [System.Serializable]
+    private class ProgressData
+    {
+        public float progress;
+    }
 }
