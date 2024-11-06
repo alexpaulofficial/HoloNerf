@@ -1,264 +1,333 @@
-using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using UnityEngine;
 using MixedReality.Toolkit.UX;
 using TMPro;
 using UnityEngine.Windows.WebCam;
-using System.Collections.Generic;
+using System.Linq;
+using MixedReality.Toolkit.Speech.Windows;
 
 public class ScreenshotHandlerHL : MonoBehaviour
 {
-   [SerializeField] private float captureInterval = 0.1f;
-   [SerializeField] private string coordinatesFileName = "coordinates.txt";
-   [SerializeField] private GameObject markerPrefab;
-   [SerializeField] private TextMeshProUGUI statusText;
-   [SerializeField] private TextMeshProUGUI screenshotButtonText;
-   [SerializeField] private PressableButton clearMarkersButton;
+    // Cartella per salvare gli screenshot e nome del file per le coordinate
+    public string screenshotFolder;
+    public string coordinatesFileName = "coordinates.txt";
+    public float seconds = 0.1f;  // Intervallo per catturare screenshot
 
-   private string screenshotFolder;
-   private PhotoCapture photoCaptureObject;
-   private Coroutine screenshotCoroutine;
-   private bool isScreenshotModeActive;
-   private bool isCapturingPhoto;
-   private int screenshotCounter;
-   private PressableButton screenshotButton;
-   private readonly List<GameObject> markers = new List<GameObject>();
+    private Coroutine screenshotCoroutine = null;
+    private bool isScreenshotModeActive = false;
+    private int screenshotCounter = 0;
 
-   private void Awake()
-   {
-       InitializeCamera();
-       InitializeComponents();
-       SetupDirectories();
-       UpdateScreenshotCounter();
-       UpdateUI();
-   }
+    private PressableButton screenshotButton;
+    public TextMeshProUGUI screenshotButtonText;
+    public PressableButton clearMarkersButton;
+    [SerializeField] private TextMeshProUGUI statusText;
 
-   private void InitializeCamera()
-   {
-       if (Camera.main != null)
-       {
-           Camera.main.fieldOfView = 64.69f;
-           Camera.main.aspect = 3904f / 2196f;
-           Camera.main.nearClipPlane = 0.1f;
-           Camera.main.farClipPlane = 20f;
-       }
-   }
+    public GameObject markerPrefab;
+    private List<GameObject> markers = new List<GameObject>();
 
-   private void InitializeComponents()
-   {
-       screenshotButton = GetComponent<PressableButton>();
-       
-       if (screenshotButton == null)
-       {
-           LogError("PressableButton mancante");
-           return;
-       }
+    private PhotoCapture photoCaptureObject = null;
+    private bool isCapturingPhoto = false;
 
-       screenshotButton.OnClicked.AddListener(ToggleScreenshotMode);
-       
-       if (clearMarkersButton != null)
-           clearMarkersButton.OnClicked.AddListener(ClearMarkers);
-       else
-           LogError("ClearMarkersButton mancante");
+    private void Awake()
+    {
+        // Impostazioni della fotocamera
+        if (Camera.main != null)
+        {
+            Camera.main.fieldOfView = 64.69f;
+            Camera.main.aspect = 3904f / 2196f;
+            Camera.main.nearClipPlane = 0.25f;
+            Camera.main.farClipPlane = 20f;
+        }
 
-       if (markerPrefab == null)
-           LogError("MarkerPrefab mancante");
-   }
+        // Definisci la cartella per gli screenshot
+        screenshotFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
 
-   private void SetupDirectories()
-   {
-       screenshotFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
-       Directory.CreateDirectory(screenshotFolder);
-   }
+        // Configura il pulsante per gli screenshot
+        screenshotButton = GetComponent<PressableButton>();
+        if (screenshotButton != null)
+        {
+            screenshotButton.OnClicked.AddListener(OnScreenshotButtonClicked);
+            if (screenshotButtonText == null)
+            {
+                statusText.text = "Componente TextMeshPro mancante sul pulsante di screenshot.";
+            }
+        }
+        else
+        {
+            statusText.text = "Componente PressableButton mancante su questo GameObject.";
+        }
 
-   private void UpdateScreenshotCounter()
-   {
-       string[] existingScreenshots = Directory.GetFiles(screenshotFolder, "*.jpg");
-       screenshotCounter = existingScreenshots.Length;
-   }
+        // Assicurati che la cartella per gli screenshot esista
+        if (!Directory.Exists(screenshotFolder))
+        {
+            Directory.CreateDirectory(screenshotFolder);
+        }
 
-   private void UpdateUI()
-   {
-       if (screenshotButtonText != null)
-       {
-           screenshotButtonText.text = isScreenshotModeActive ? "Stop Photos" : "Take Photos";
-           if (screenshotButton != null && screenshotButton.GetComponent<Renderer>() != null)
-           {
-               screenshotButton.GetComponent<Renderer>().material.color = isScreenshotModeActive ? Color.green : Color.white;
-           }
-       }
-   }
+        // Controlla l'assegnazione del prefab del marker
+        if (markerPrefab == null)
+        {
+            statusText.text = "Prefab del marker non assegnato!";
+        }
 
-   private void ToggleScreenshotMode()
-   {
-       isScreenshotModeActive = !isScreenshotModeActive;
-       
-       if (isScreenshotModeActive)
-           StartPhotoCaptureMode();
-       else
-           StopPhotoCaptureMode();
-           
-       UpdateUI();
-   }
+        // Configura il pulsante per eliminare i marker
+        if (clearMarkersButton != null)
+        {
+            clearMarkersButton.OnClicked.AddListener(ClearMarkers);
+        }
+        else
+        {
+            statusText.text = "Pulsante di eliminazione marker non assegnato!";
+        }
 
-   private void StartPhotoCaptureMode()
-   {
-       if (photoCaptureObject == null)
-           PhotoCapture.CreateAsync(false, OnPhotoCaptureCreated);
-       else
-           screenshotCoroutine = StartCoroutine(CaptureScreenshotRoutine());
-   }
+        // Inizializza il contatore degli screenshot e lo stato del pulsante
+        UpdateScreenshotCounter();
+        UpdateButtonState();
+    }
 
-   private void StopPhotoCaptureMode()
-   {
-       isScreenshotModeActive = false;
-       if (screenshotCoroutine != null)
-       {
-           StopCoroutine(screenshotCoroutine);
-           screenshotCoroutine = null;
-       }
-       
-       if (photoCaptureObject != null)
-       {
-           photoCaptureObject.StopPhotoModeAsync(OnStoppedPhotoMode);
-       }
-   }
+    private void OnScreenshotButtonClicked()
+    {
+        // Attiva/disattiva la modalità screenshot
+        isScreenshotModeActive = !isScreenshotModeActive;
 
-   private void OnPhotoCaptureCreated(PhotoCapture captureObject)
-   {
-       photoCaptureObject = captureObject;
-       var resolution = PhotoCapture.SupportedResolutions
-           .OrderByDescending(res => res.width * res.height)
-           .Last();
+        if (isScreenshotModeActive)
+        {
+            StartPhotoCaptureMode();
+        }
+        else
+        {
+            StopPhotoCaptureMode();
+        }
 
-       var parameters = new CameraParameters
-       {
-           hologramOpacity = 0.0f,
-           cameraResolutionWidth = resolution.width,
-           cameraResolutionHeight = resolution.height,
-           pixelFormat = CapturePixelFormat.BGRA32
-       };
+        // Aggiorna l'interfaccia utente
+        UpdateScreenshotCounter();
+        UpdateButtonState();
+    }
 
-       photoCaptureObject.StartPhotoModeAsync(parameters, OnPhotoModeStarted);
-   }
+    private void StartPhotoCaptureMode()
+    {
+        // Avvia il processo di acquisizione foto
+        isScreenshotModeActive = true;
+        if (photoCaptureObject == null)
+        {
+            PhotoCapture.CreateAsync(false, OnPhotoCaptureCreated);
+        }
+        else
+        {
+            screenshotCoroutine = StartCoroutine(CaptureScreenshotEveryNSeconds(seconds));
+        }
+    }
 
-   private void OnPhotoModeStarted(PhotoCapture.PhotoCaptureResult result)
-   {
-       if (result.success)
-       {
-           statusText.text = "Modalità foto avviata con successo.";
-           screenshotCoroutine = StartCoroutine(CaptureScreenshotRoutine());
-       }
-       else
-       {
-           statusText.text = $"Errore avvio modalità foto: {result.resultType}";
-       }
-   }
+    private void StopPhotoCaptureMode()
+    {
+        // Ferma il processo di acquisizione foto
+        isScreenshotModeActive = false;
+        if (screenshotCoroutine != null)
+        {
+            StopCoroutine(screenshotCoroutine);
+            screenshotCoroutine = null;
+        }
+        if (photoCaptureObject != null)
+        {
+            photoCaptureObject.StopPhotoModeAsync(OnStoppedPhotoMode);
+        }
+    }
 
-   private IEnumerator CaptureScreenshotRoutine()
-   {
-       while (isScreenshotModeActive)
-       {
-           if (!isCapturingPhoto)
-               CaptureScreenshot();
-           yield return new WaitForSeconds(captureInterval);
-       }
-   }
+    private void UpdateButtonState()
+    {
+        // Aggiorna il testo e il colore del pulsante in base alla modalità screenshot
+        if (screenshotButtonText != null)
+        {
+            if (isScreenshotModeActive)
+            {
+                screenshotButtonText.text = "Ferma Foto";
+                screenshotButton.GetComponent<Renderer>().material.color = Color.green;
+            }
+            else
+            {
+                screenshotButtonText.text = "Scatta Foto";
+                screenshotButton.GetComponent<Renderer>().material.color = Color.white;
+            }
+        }
+    }
 
-   private void CaptureScreenshot()
-   {
-       if (photoCaptureObject != null && !isCapturingPhoto)
-       {
-           isCapturingPhoto = true;
-           string filename = $"{screenshotCounter:D6}.jpg";
-           string filePath = Path.Combine(screenshotFolder, filename);
+    private void OnPhotoCaptureCreated(PhotoCapture captureObject)
+    {
+        // Configura i parametri di acquisizione foto dopo la creazione dell'oggetto
+        photoCaptureObject = captureObject;
 
-           statusText.text = $"Scatto foto: {filename}";
-           photoCaptureObject.TakePhotoAsync(filePath, PhotoCaptureFileOutputFormat.JPG, OnCapturedPhotoToDisk);
-       }
-   }
+        Resolution cameraResolution = PhotoCapture.SupportedResolutions.OrderByDescending((res) => res.width * res.height).Last();
 
-   private void OnCapturedPhotoToDisk(PhotoCapture.PhotoCaptureResult result)
-   {
-       isCapturingPhoto = false;
-       if (result.success)
-       {
-           SaveCoordinates();
-           PlaceMarker();
-           screenshotCounter++;
-           statusText.text = $"Screenshot {screenshotCounter} salvato";
-       }
-       else
-       {
-           statusText.text = $"Errore salvataggio foto {screenshotCounter}: {result.resultType}";
-       }
-   }
+        CameraParameters cameraParameters = new CameraParameters
+        {
+            hologramOpacity = 0.0f,
+            cameraResolutionWidth = cameraResolution.width,
+            cameraResolutionHeight = cameraResolution.height,
+            pixelFormat = CapturePixelFormat.BGRA32
+        };
 
-   private void SaveCoordinates()
-   {
-       var matrix = Matrix4x4.TRS(
-           Camera.main.transform.position,
-           Camera.main.transform.rotation,
-           Vector3.one);
+        statusText.text = "Avvio della modalità foto...";
+        photoCaptureObject.StartPhotoModeAsync(cameraParameters, OnPhotoModeStarted);
+    }
 
-       var matrixLine = $"{DateTime.Now.Ticks}\t" +
-                       $"{matrix.m00}\t{matrix.m01}\t{matrix.m02}\t{matrix.m03}\t" +
-                       $"{matrix.m10}\t{matrix.m11}\t{matrix.m12}\t{matrix.m13}\t" +
-                       $"{matrix.m20}\t{matrix.m21}\t{matrix.m22}\t{matrix.m23}\t" +
-                       $"0\t0\t0\t{matrix.m33}\n";
+    private void OnPhotoModeStarted(PhotoCapture.PhotoCaptureResult result)
+    {
+        // Avvia l'acquisizione di screenshot a intervalli se la modalità foto è stata avviata con successo
+        if (result.success)
+        {
+            statusText.text = "Modalità foto avviata con successo.";
+            screenshotCoroutine = StartCoroutine(CaptureScreenshotEveryNSeconds(seconds));
+        }
+        else
+        {
+            statusText.text = $"Impossibile avviare la modalità foto. Risultato: {result.resultType}";
+        }
+    }
 
-       File.AppendAllText(Path.Combine(screenshotFolder, coordinatesFileName), matrixLine);
-   }
+    private IEnumerator CaptureScreenshotEveryNSeconds(float seconds)
+    {
+        // Cattura screenshot a intervalli specificati mentre è attiva la modalità screenshot
+        while (isScreenshotModeActive)
+        {
+            if (!isCapturingPhoto)
+            {
+                CaptureScreenshot();
+            }
+            yield return new WaitForSeconds(seconds);
+        }
+    }
 
-   private void PlaceMarker()
-   {
-       if (markerPrefab == null) return;
+    private void CaptureScreenshot()
+    {
+        // Cattura un singolo screenshot
+        if (photoCaptureObject != null && !isCapturingPhoto)
+        {
+            isCapturingPhoto = true;
+            string filename = $"{screenshotCounter:D6}.jpg";
+            string filePath = Path.Combine(screenshotFolder, filename);
 
-       var marker = Instantiate(
-           markerPrefab,
-           Camera.main.transform.position,
-           Camera.main.transform.rotation);
-           
-       marker.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
-       markers.Add(marker);
+            statusText.text = $"Scattando foto: {filename}";
+            photoCaptureObject.TakePhotoAsync(filePath, PhotoCaptureFileOutputFormat.JPG, OnCapturedPhotoToDisk);
+        }
+        else if (photoCaptureObject == null)
+        {
+            // Riavvia la modalità foto se l'oggetto di acquisizione è nullo
+            statusText.text = "Oggetto PhotoCapture nullo. Riavvio della modalità foto...";
+            StartPhotoCaptureMode();
+        }
+    }
 
-       if (marker.GetComponentInChildren<TextMeshPro>() is TextMeshPro markerText)
-           markerText.text = screenshotCounter.ToString();
-   }
+    private void OnCapturedPhotoToDisk(PhotoCapture.PhotoCaptureResult result)
+    {
+        // Gestisci i risultati dell'acquisizione foto e salva le coordinate
+        isCapturingPhoto = false;
+        if (result.success)
+        {
+            statusText.text = $"Screenshot {screenshotCounter} salvato con successo";
+            screenshotButtonText.text = screenshotCounter.ToString();
+            screenshotCounter++;
+            SaveCoordinates();
+            PlaceMarker();
+        }
+        else if (!isScreenshotModeActive)
+        {
+            statusText.text = "Modalità screenshot interrotta";
+        }
+        else
+        {
+            statusText.text = $"Impossibile salvare la foto {screenshotCounter}. Risultato: {result.resultType}";
+        }
+    }
 
-   public void ClearMarkers()
-   {
-       foreach (var marker in markers)
-       {
-           if(marker != null)
-               Destroy(marker);
-       }
-       markers.Clear();
-       screenshotCounter = 0;
-       statusText.text = "Markers eliminati";
-   }
+    private void SaveCoordinates()
+    {
+        // Salva le coordinate della fotocamera in un file
+        Vector3 position = Camera.main.transform.position;
+        Quaternion rotation = Camera.main.transform.rotation;
 
-   private void OnStoppedPhotoMode(PhotoCapture.PhotoCaptureResult result)
-   {
-       if (photoCaptureObject != null)
-       {
-           photoCaptureObject.Dispose();
-           photoCaptureObject = null;
-       }
-       statusText.text = "Modalità foto terminata";
-   }
+        Matrix4x4 matrix = Matrix4x4.TRS(position, rotation, Vector3.one);
+        string matrixLine = $"{System.DateTime.Now.Ticks}\t" +
+                            $"{matrix.m00}\t{matrix.m01}\t{matrix.m02}\t{matrix.m03}\t" +
+                            $"{matrix.m10}\t{matrix.m11}\t{matrix.m12}\t{matrix.m13}\t" +
+                            $"{matrix.m20}\t{matrix.m21}\t{matrix.m22}\t{matrix.m23}\t" +
+                            $"0\t0\t0\t{matrix.m33}\n";
 
-   private void LogError(string message)
-   {
-       Debug.LogError(message);
-       if (statusText != null)
-           statusText.text = message;
-   }
+        string path = Path.Combine(screenshotFolder, coordinatesFileName);
+        File.AppendAllText(path, matrixLine);
 
-   private void OnDisable()
-   {
-       StopPhotoCaptureMode();
-   }
+        statusText.text = $"Coordinate salvate in: {path}";
+    }
+
+    private void UpdateScreenshotCounter()
+    {
+        // Aggiorna il contatore degli screenshot in base alle immagini esistenti nella cartella
+        string[] existingScreenshots = Directory.GetFiles(screenshotFolder, "*.jpg");
+        screenshotCounter = existingScreenshots.Length;
+    }
+
+    private void OnDisable()
+    {
+        // Ferma la modalità foto quando lo script viene disabilitato
+        if (photoCaptureObject != null)
+        {
+            photoCaptureObject.StopPhotoModeAsync(OnStoppedPhotoMode);
+        }
+    }
+
+    private void OnStoppedPhotoMode(PhotoCapture.PhotoCaptureResult result)
+    {
+        // Pulisce dopo aver fermato la modalità foto
+        if (photoCaptureObject != null)
+        {
+            photoCaptureObject.Dispose();
+            photoCaptureObject = null;
+        }
+        statusText.text = "Modalità acquisizione foto interrotta e pulizia effettuata";
+    }
+
+    private void PlaceMarker()
+    {
+        // Posiziona un marker prefab alla posizione della fotocamera
+        if (markerPrefab != null)
+        {
+            Vector3 position = Camera.main.transform.position;
+            Quaternion rotation = Camera.main.transform.rotation;
+
+            GameObject marker = Instantiate(markerPrefab, position, rotation);
+            marker.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
+            markers.Add(marker);
+
+            statusText.text = "Marker aggiunto: " + marker.name + ". Totale marker: " + markers.Count;
+
+            TextMeshPro markerText = marker.GetComponentInChildren<TextMeshPro>();
+            if (markerText != null)
+            {
+                markerText.text = screenshotCounter.ToString();
+            }
+        }
+        else
+        {
+            statusText.text = "Prefab del marker è nullo, impossibile posizionare il marker.";
+        }
+    }
+
+    public void ClearMarkers()
+    {
+        // Elimina tutti i marker dalla scena
+        if (markers.Count > 0)
+        {
+            foreach (GameObject marker in markers)
+            {
+                Destroy(marker);  // Distrugge ogni marker nella lista
+            }
+            markers.Clear();  // Svuota la lista dopo aver distrutto i marker
+            screenshotCounter = 0;
+            statusText.text = "Tutti i marker sono stati eliminati.";
+        }
+        else
+        {
+            statusText.text = "Nessun marker da eliminare.";
+        }
+    }
 }
