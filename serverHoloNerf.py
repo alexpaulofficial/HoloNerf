@@ -432,6 +432,8 @@ def upload_data():
         return jsonify({"status": "Error", "message": "Il file deve essere in formato ZIP"}), 400
 
     try:
+        
+
         filename = secure_filename(file.filename)
         temp_zip_path = os.path.join(config.DATA_FOLDER, filename)
         file.save(temp_zip_path)
@@ -513,6 +515,10 @@ def start_export():
         
         if any(x is None for x in [obb_scale_x, obb_scale_y, obb_scale_z]):
             return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 404
+        else: 
+            if obb_scale_x <= 0 or obb_scale_y <= 0 or obb_scale_z <= 0:
+                return jsonify({"status": "Error", "message": "Parametri non validi (devono essere > 0)"}), 404
+
     except (ValueError, TypeError):
         return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 404
 
@@ -596,27 +602,7 @@ def get_mesh():
     except (OSError, ValueError) as e:
         logger.error("Errore nel recupero del mesh: %s", e)
         return jsonify({"status": "Error", "message": "Errore nel recupero del mesh"}), 500
-
-@app.route("/delete_server", methods=["DELETE"])
-def delete_server():
-    """Elimina tutti i dati dal server."""
-    if state.is_training or state.is_exporting:
-        return jsonify({
-            "status": "Error", 
-            "message": "Non è possibile eliminare il server. Training o export in corso."
-        }), 400
-
-    try:
-        for root, dirs, files in os.walk(config.DATA_FOLDER, topdown=False):
-            for file in files:
-                os.remove(os.path.join(root, file))
-            for directory in dirs:
-                os.rmdir(os.path.join(root, directory))
-        return jsonify({"status": "Success", "message": "Dati eliminati con successo"}), 200
-    except (OSError, IOError) as e:
-        logger.error("Errore nell'eliminazione dei dati: %s", e)
-        return jsonify({"status": "Error", "message": "Errore nell'eliminazione dei dati"}), 500
-
+    
 if __name__ == "__main__":
     # Configurazione encoding per Windows
     if sys.platform == "win32":
