@@ -436,6 +436,10 @@ def upload_data():
         file.save(temp_zip_path)
 
         with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
+            # Delete previous data
+            for root, _, files in os.walk(config.DATA_FOLDER):
+                for file in files:
+                    os.remove(os.path.join(root, file))
             zip_ref.extractall(config.DATA_FOLDER)
         os.remove(temp_zip_path)
         
