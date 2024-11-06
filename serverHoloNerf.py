@@ -71,8 +71,8 @@ def cleanup_temp_files():
                     os.remove(path)
                 except OSError:
                     pass
-               
-def retry_operation(max_attempts=3, delay=1):
+           
+def retry_operation(max_attempts=5, delay=1):
     """Decorator per retry delle operazioni critiche"""
     def decorator(func):
         @wraps(func)
@@ -89,7 +89,7 @@ def retry_operation(max_attempts=3, delay=1):
             return None
         return wrapper
     return decorator
-
+# Serve nel file coordinates.txt dato che le coordinate sono con la virgola come separatore decimale
 def replace_commas_with_dots(file_path: str) -> None:
     """
     Sostituisce le virgole con i punti nei file di testo per standardizzare i separatori decimali.
@@ -115,8 +115,8 @@ def start_cleanup_thread():
     
     cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
     cleanup_thread.start()
-
-def resize_images_to_720p(folder_path: str) -> None:
+# Serve per alleggerire il training, ridimensiona le immagini
+def resize_images(folder_path: str) -> None:
     """
     Ridimensiona le immagini nella cartella specificata a risoluzione 720p.
     
@@ -442,7 +442,7 @@ def upload_data():
         os.remove(temp_zip_path)
         
         # Ridimensiona le immagini a 720p
-        resize_images_to_720p(os.path.join(config.DATA_FOLDER, "images"))
+        resize_images(os.path.join(config.DATA_FOLDER, "images"))
         return jsonify({"status": "Success", "message": "File caricato ed estratto con successo"})
     except (IOError, ValueError) as e:
         logger.error("Errore nell'upload del file: %s", e)
@@ -628,5 +628,13 @@ if __name__ == "__main__":
     # Inizializza il multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
     
+    # Pulisce la cartella "DATA" prima dell'avvio
+    for root, dirs, files in os.walk(config.DATA_FOLDER, topdown=False):
+        for file in files:
+            os.remove(os.path.join(root, file))
+        for directory in dirs:
+            os.rmdir(os.path.join(root, directory))
+
     # Avvia il server
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)
+    
