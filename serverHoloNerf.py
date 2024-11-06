@@ -430,20 +430,6 @@ def upload_data():
 
     if not file.filename.endswith(".zip"):
         return jsonify({"status": "Error", "message": "Il file deve essere in formato ZIP"}), 400
-
-    # Se la cartella data è già presente, la elimina e ricrea
-    if os.path.exists(config.DATA_FOLDER):
-        try:
-            for root, _, files in os.walk(config.DATA_FOLDER):
-                for file in files:
-                    os.remove(os.path.join(root, file))
-            os.rmdir(config.DATA_FOLDER)
-        except OSError as e:
-            logger.error("Errore nella rimozione della cartella data: %s", e)
-            return jsonify({"status": "Error", "message": "Errore nella rimozione della cartella data"}), 500
-    
-    os.makedirs(config.DATA_FOLDER)
-
     try:
         filename = secure_filename(file.filename)
         temp_zip_path = os.path.join(config.DATA_FOLDER, filename)
