@@ -107,6 +107,7 @@ public class ScreenshotHandlerHL : MonoBehaviour
 
     private void StartPhotoCaptureMode()
     {
+        UpdateScreenshotCounter();
         // Avvia il processo di acquisizione foto
         isScreenshotModeActive = true;
         if (photoCaptureObject == null)

@@ -72,7 +72,7 @@ def cleanup_temp_files():
                 except OSError:
                     pass
            
-def retry_operation(max_attempts=5, delay=1):
+def retry_operation(max_attempts=5, delay=5):
     """Decorator per retry delle operazioni critiche"""
     def decorator(func):
         @wraps(func)
@@ -151,10 +151,9 @@ def load_and_process_data(rgb_dir: str, intrinsics_path: str, extrinsics_path: s
     replace_commas_with_dots(extrinsics_path)
     
     # Trova i paths delle immagini e processa gli indici
-    image_paths = glob.glob(os.path.join(rgb_dir, "*.jpg"))
+    image_paths = glob.glob(rgb_dir)
     image_paths = [path.replace(f"{config.DATA_FOLDER}/", "") for path in image_paths]
-    img_idxs = np.array([int(path.split("\\")[-1].split(".")[0]) for path in image_paths]) - 1
-
+    img_idxs = np.array([int(path.split("\\")[-1].split(".")[0]) for path in image_paths], dtype=int) - 1
     # Carica i parametri intrinseci
     intrinsic_txt = np.loadtxt(intrinsics_path)
     W, H = map(int, intrinsic_txt[-2:])
@@ -237,7 +236,7 @@ def create_transforms_dict(image_paths: list[str],
     """
     frames = [
         {
-            "file_path": f"{path.split('/')[-1]}",
+            "file_path": f"images\\{path.split('\\')[-1]}",
             "transform_matrix": pose.tolist(),
             "timestamp": timestamp
         }
@@ -504,7 +503,7 @@ def run_export(output_queue: multiprocessing.Queue, obb_scaleX: float, obb_scale
 def start_export():
     """Avvia il processo di esportazione."""
     if state.is_exporting:
-        return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 400
+        return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 401
 
     try:
         obb_scale_x = request.args.get("x", type=float)
@@ -512,9 +511,9 @@ def start_export():
         obb_scale_z = request.args.get("z", type=float)
         
         if any(x is None for x in [obb_scale_x, obb_scale_y, obb_scale_z]):
-            return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 400
+            return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 402
     except ValueError:
-        return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 400
+        return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 403
 
     state.is_exporting = True
     state.export_completed = False
@@ -627,13 +626,6 @@ if __name__ == "__main__":
 
     # Inizializza il multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
-    
-    # Pulisce la cartella "DATA" prima dell'avvio
-    for root, dirs, files in os.walk(config.DATA_FOLDER, topdown=False):
-        for file in files:
-            os.remove(os.path.join(root, file))
-        for directory in dirs:
-            os.rmdir(os.path.join(root, directory))
 
     # Avvia il server
     app.run(debug=False, host="0.0.0.0", port=5000)
