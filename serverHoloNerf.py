@@ -236,7 +236,7 @@ def create_transforms_dict(image_paths: list[str],
     """
     frames = [
         {
-            "file_path": f"images\\{path.split('\\')[-1]}",
+            "file_path": "images\\{}".format(path.split('\\')[-1]),
             "transform_matrix": pose.tolist(),
             "timestamp": timestamp
         }
@@ -506,14 +506,15 @@ def start_export():
         return jsonify({"status": "Error", "message": "Esportazione già in corso"}), 401
 
     try:
-        obb_scale_x = request.args.get("x", type=float)
-        obb_scale_y = request.args.get("y", type=float)
-        obb_scale_z = request.args.get("z", type=float)
+        data = request.get_json()
+        obb_scale_x = data.get("x")
+        obb_scale_y = data.get("y")
+        obb_scale_z = data.get("z")
         
         if any(x is None for x in [obb_scale_x, obb_scale_y, obb_scale_z]):
-            return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 402
-    except ValueError:
-        return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 403
+            return jsonify({"status": "Error", "message": "Parametri di scala mancanti"}), 404
+    except (ValueError, TypeError):
+        return jsonify({"status": "Error", "message": "Parametri di scala non validi"}), 404
 
     state.is_exporting = True
     state.export_completed = False
