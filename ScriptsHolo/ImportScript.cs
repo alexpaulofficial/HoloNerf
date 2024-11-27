@@ -25,7 +25,6 @@ public class DownloadImportMeshScript : MonoBehaviour
 
     private void Start()
     {
-        // Inizializzazione con controlli di null safety
         mainCamera = Camera.main;
         if (!mainCamera) Debug.LogError("Camera principale non trovata");
         
@@ -47,62 +46,61 @@ public class DownloadImportMeshScript : MonoBehaviour
 
     private void HandleDownloadRequest()
     {
-        // Previene richieste multiple durante l'elaborazione
         if (!isProcessing)
         {
             isProcessing = true;
+            UpdateStatus("Inizio download e importazione della mesh...");
             StartCoroutine(DownloadAndLoadMeshRoutine());
         }
         else
         {
-            UpdateStatus("Elaborazione in corso, attendere...");
+            UpdateStatus("Elaborazione già in corso, attendere...");
         }
     }
 
     private IEnumerator DownloadAndLoadMeshRoutine()
     {
+        string meshZipPath = Path.Combine(Application.temporaryCachePath, "mesh.zip");
+        string extractPath = Path.Combine(Application.temporaryCachePath, "extracted");
+
+        if (Directory.Exists(extractPath))
+            Directory.Delete(extractPath, true);
+        Directory.CreateDirectory(extractPath);
+
+        UpdateStatus("Download della mesh in corso...");
         
-            string meshZipPath = Path.Combine(Application.temporaryCachePath, "mesh.zip");
-            string extractPath = Path.Combine(Application.temporaryCachePath, "extracted");
+        yield return StartCoroutine(SendRequestWithRetry(
+            $"{StartStopTrainingScript.ServerUrl}/get_mesh",
+            "GET",
+            null,
+            meshZipPath
+        ));
 
-            // Assicura che la directory di estrazione sia pulita
-            if (Directory.Exists(extractPath))
-                Directory.Delete(extractPath, true);
-            Directory.CreateDirectory(extractPath);
+        UpdateStatus("Estrazione della mesh in corso...");
+        
+        yield return new WaitForEndOfFrame();
+        ExtractZipFile(meshZipPath, extractPath);
 
-            UpdateStatus("Download mesh in corso...");
-            
-            // Download con retry
-            yield return StartCoroutine(SendRequestWithRetry(
-                $"{StartStopTrainingScript.ServerUrl}/get_mesh",
-                "GET",
-                null,
-                meshZipPath
-            ));
-
-            UpdateStatus("Estrazione mesh in corso...");
-            
-            // Estrazione usando System.IO.Compression
-            yield return new WaitForEndOfFrame();
-            ExtractZipFile(meshZipPath, extractPath);
-
-            string objPath = Path.Combine(extractPath, "mesh.obj");
-            if (!File.Exists(objPath))
-            {
-                throw new FileNotFoundException("File mesh.obj non trovato nell'archivio");
-            }
-
-            yield return new WaitForEndOfFrame();
-            try
+        string objPath = Path.Combine(extractPath, "mesh.obj");
+        if (!File.Exists(objPath))
         {
+            UpdateStatus("Errore: File mesh.obj non trovato.");
+            isProcessing = false;
+            yield break;
+        }
+
+        yield return new WaitForEndOfFrame();
+        try
+        {
+            UpdateStatus("Caricamento e posizionamento della mesh...");
             LoadAndPositionMesh(objPath);
             
-            // Pulizia file temporanei
             CleanupTemporaryFiles(meshZipPath, extractPath);
+            UpdateStatus("Mesh importata con successo!");
         }
         catch (System.Exception e)
         {
-            UpdateStatus($"Errore: {e.Message}");
+            UpdateStatus($"Errore durante l'importazione: {e.Message}");
             Debug.LogError($"Errore durante l'importazione: {e}");
         }
         finally
@@ -113,6 +111,7 @@ public class DownloadImportMeshScript : MonoBehaviour
 
     private void ExtractZipFile(string zipPath, string extractPath)
     {
+        UpdateStatus("Estrazione del file zip...");
         using (ZipArchive archive = ZipFile.OpenRead(zipPath))
         {
             archive.ExtractToDirectory(extractPath);
@@ -124,11 +123,9 @@ public class DownloadImportMeshScript : MonoBehaviour
         GameObject loadedMesh = new OBJLoader().Load(objPath);
         if (loadedMesh == null) throw new System.Exception("Caricamento mesh fallito");
 
-        // Configurazione componenti
         var collider = loadedMesh.AddComponent<BoxCollider>();
         var manipulator = loadedMesh.AddComponent<ObjectManipulator>();
 
-        // Posizionamento
         if (mainCamera)
         {
             loadedMesh.transform.position = mainCamera.transform.position + 
@@ -137,18 +134,19 @@ public class DownloadImportMeshScript : MonoBehaviour
         }
 
         importedMeshes.Add(loadedMesh);
-        UpdateStatus("Mesh importata con successo!");
     }
 
     private void CleanupTemporaryFiles(string zipPath, string extractPath)
     {
         try
         {
+            UpdateStatus("Pulizia dei file temporanei...");
             if (File.Exists(zipPath)) File.Delete(zipPath);
             if (Directory.Exists(extractPath)) Directory.Delete(extractPath, true);
         }
         catch (System.Exception e)
         {
+            UpdateStatus($"Avviso: Errore durante la pulizia dei file temporanei: {e.Message}");
             Debug.LogWarning($"Errore durante la pulizia dei file temporanei: {e.Message}");
         }
     }
@@ -157,7 +155,7 @@ public class DownloadImportMeshScript : MonoBehaviour
     {
         if (isProcessing)
         {
-            UpdateStatus("Impossibile cancellare durante l'elaborazione");
+            UpdateStatus("Impossibile cancellare durante l'elaborazione.");
             return;
         }
 
@@ -167,7 +165,7 @@ public class DownloadImportMeshScript : MonoBehaviour
         }
         
         importedMeshes.Clear();
-        UpdateStatus("Oggetti cancellati con successo");
+        UpdateStatus("Oggetti cancellati con successo.");
     }
 
     private void UpdateStatus(string message)
@@ -192,7 +190,7 @@ public class DownloadImportMeshScript : MonoBehaviour
 
                 yield return www.SendWebRequest();
 
-                if (www.result == UnityWebRequest.Result.Success || www.responseCode == 204)
+                if (www.responseCode != 0)
                 {
                     success = true;
                     callback?.Invoke(www);
@@ -200,12 +198,16 @@ public class DownloadImportMeshScript : MonoBehaviour
                 }
 
                 retries++;
-                UpdateStatus($"Tentativo {retries}/{MaxRetries} fallito. Nuovo tentativo...");
+                UpdateStatus($"Tentativo {retries}/{MaxRetries} fallito. Nuovo tentativo in {RetryDelay} secondi...");
                 yield return new WaitForSeconds(RetryDelay);
             }
         }
 
         if (!success)
+        {
+            UpdateStatus("Errore: Richiesta fallita dopo tutti i tentativi.");
+            isProcessing = false;
             throw new System.Exception("Richiesta fallita dopo tutti i tentativi");
+        }
     }
 }

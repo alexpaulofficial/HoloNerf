@@ -11,7 +11,7 @@ public class StartStopTrainingScript : MonoBehaviour
     [SerializeField] private PressableButton trainingButton;
     [SerializeField] private TextMeshProUGUI statusText;
     private TextMeshPro buttonText;
-    [SerializeField] public static string ServerUrl = "http://172.24.150.157:5000";
+    [SerializeField] public static string ServerUrl = "http://172.24.154.61:5000";
     private bool isTraining = false;
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
@@ -33,77 +33,13 @@ public class StartStopTrainingScript : MonoBehaviour
             StartTraining();
     }
 
-private async void StartTraining()
-{
-    isTraining = true;
-    UpdateButtonText();
-    statusText.text = "Preparing data...";
-    StartCoroutine(TrainingProcessAsync());
-}
-
-private IEnumerator TrainingProcessAsync()
-{
-    string zipPath = null;
-    yield return StartCoroutine(CreateZipFileAsync().AsCoroutine().ContinueWith(task => zipPath = task.Result));
-
-    if (zipPath != null)
+    private void StartTraining()
     {
-        yield return StartCoroutine(UploadZipFile(zipPath));
-        if (statusText.text == "Data uploaded. Starting training...")
-        {
-            yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/start_training", "GET", OnStartTrainingComplete));
-        }
-    }
-    else
-    {
-        statusText.text = "Error: Could not upload file.";
-        isTraining = false;
+        isTraining = true;
         UpdateButtonText();
+        statusText.text = "Preparing data...";
+        StartCoroutine(TrainingProcess());
     }
-}
-
-private IEnumerator CreateZipFileAsync()
-{
-    string captureFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE");
-    string zipPath = Path.Combine(Application.temporaryCachePath, "data.zip");
-
-    if (File.Exists(zipPath))
-    {
-        File.Delete(zipPath);
-    }
-
-    return Task.Run(() =>
-    {
-        try
-        {
-            // Create zip file in a background thread
-            ZipFile.CreateFromDirectory(captureFolder, zipPath, CompressionLevel.Fastest, false);
-            return zipPath;
-        }
-        catch (System.Exception e)
-        {
-            Debug.LogError($"Error creating zip file: {e.Message}");
-            return null;
-        }
-    }).AsCoroutine();
-}
-
-// Helper extension method to convert Task to Coroutine
-public static class TaskExtensions
-{
-    public static IEnumerator AsCoroutine(this Task task)
-    {
-        while (!task.IsCompleted)
-        {
-            yield return null;
-        }
-        
-        if (task.IsFaulted)
-        {
-            throw task.Exception;
-        }
-    }
-}
 
     private void StopTraining()
     {
@@ -128,6 +64,50 @@ public static class TaskExtensions
         }
     }
 
+     private IEnumerator TrainingProcess()
+    {
+        string zipPath = CreateZipFile();
+        if (zipPath != null)  // Verifichiamo che la creazione dello zip sia avvenuta con successo
+        {
+            statusText.text = "Uploading data";
+            yield return StartCoroutine(UploadZipFile(zipPath));
+            yield return StartCoroutine(SendRequestWithRetry($"{ServerUrl}/start_training", "GET", OnStartTrainingComplete));
+        }
+        else
+        {
+            statusText.text = "Error: Could not create zip file.";
+            isTraining = false;
+            UpdateButtonText();
+        }
+    }
+
+   private string CreateZipFile()
+    {
+        string captureFolder = Path.Combine(Application.temporaryCachePath, "CAPTURE");
+        string zipPath = Path.Combine(Application.temporaryCachePath, "data.zip");
+
+        // Se esiste già un file zip precedente, lo eliminiamo
+        if (File.Exists(zipPath))
+        {
+            File.Delete(zipPath);
+        }
+
+        try
+        {
+            // Utilizziamo ZipFile.CreateFromDirectory che è più leggero e integrato nel framework
+            ZipFile.CreateFromDirectory(captureFolder, zipPath, System.IO.Compression.CompressionLevel.Fastest, false);
+            return zipPath;
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Error creating zip file: {e.Message}");
+            statusText.text = "Error: Failed to create zip file.";
+            isTraining = false;
+            UpdateButtonText();
+            return null;
+        }
+    }
+
     private IEnumerator UploadZipFile(string zipPath)
     {
         WWWForm form = new WWWForm();
@@ -138,7 +118,7 @@ public static class TaskExtensions
     private void OnUploadComplete(UnityWebRequest www)
     {
         if (www.responseCode == 200)
-            statusText.text = "Data uploaded. Starting training...";
+            statusText.text = "Data uploaded. Executing transform script...";
         else
         {
             statusText.text = "Error: Failed to upload data.";
@@ -228,3 +208,4 @@ public static class TaskExtensions
         public float progress;
     }
 }
+

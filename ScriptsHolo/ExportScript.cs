@@ -3,177 +3,114 @@ using UnityEngine.Networking;
 using System.Collections;
 using TMPro;
 using MixedReality.Toolkit.UX;
-using System;
 
 public class ExportMeshScript : MonoBehaviour
 {
-    // Riferimenti UI
     [SerializeField] private PressableButton exportButton;
     [SerializeField] private TextMeshProUGUI statusText;
-    [SerializeField] private Slider[] scaleSliders = new Slider[3]; // X,Y,Z
-    [SerializeField] private TextMeshProUGUI[] sliderTexts = new TextMeshProUGUI[3];
 
-    // Configurazione richieste
+    [SerializeField] private Slider sliderX;
+    [SerializeField] private Slider sliderY;
+    [SerializeField] private Slider sliderZ;
+
+    [SerializeField] private TextMeshProUGUI sliderXText;
+    [SerializeField] private TextMeshProUGUI sliderYText;
+    [SerializeField] private TextMeshProUGUI sliderZText;
+
+    private bool isExporting = false;
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
-    private const float ProgressCheckInterval = 20f;
-    
-    private bool isExporting = false;
-    private bool isRequestPending = false;
-    private Coroutine exportCoroutine;
 
     private void Start()
     {
-        InitializeUI();
-    }
-
-    private void InitializeUI()
-    {
         if (exportButton != null)
-            exportButton.OnClicked.AddListener(HandleExportButtonClick);
+            exportButton.OnClicked.AddListener(StartMeshExport);
 
-        // Inizializza slider e testi
-        for (int i = 0; i < 3; i++)
+        if (sliderX != null) sliderX.OnValueUpdated.AddListener(UpdateSliderXText);
+        if (sliderY != null) sliderY.OnValueUpdated.AddListener(UpdateSliderYText);
+        if (sliderZ != null) sliderZ.OnValueUpdated.AddListener(UpdateSliderZText);
+
+        // Initialize the text with the current slider values
+        UpdateSliderXText(new SliderEventData(sliderX.Value, sliderX.Value));
+        UpdateSliderYText(new SliderEventData(sliderY.Value, sliderY.Value));
+        UpdateSliderZText(new SliderEventData(sliderZ.Value, sliderZ.Value));
+    }
+
+    private void UpdateSliderXText(SliderEventData data)
+    {
+        if (sliderXText != null)
+            sliderXText.text = $"X: {data.NewValue:F2}";
+    }
+
+    private void UpdateSliderYText(SliderEventData data)
+    {
+        if (sliderYText != null)
+            sliderYText.text = $"Y: {data.NewValue:F2}";
+    }
+
+    private void UpdateSliderZText(SliderEventData data)
+    {
+        if (sliderZText != null)
+            sliderZText.text = $"Z: {data.NewValue:F2}";
+    }
+
+    private void StartMeshExport()
+    {
+        float xValue = sliderX.Value;
+        float yValue = sliderY.Value;
+        float zValue = sliderZ.Value;
+
+        // Create JSON for the x, y, z parameters
+        string jsonData = $"{{\"x\":{xValue},\"y\":{yValue},\"z\":{zValue}}}";
+
+        statusText.text = "Starting mesh export...";
+
+        // Use POST with JSON in the body
+        StartCoroutine(SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/start_export", "POST", OnStartExportComplete, jsonData));
+    }
+
+    private void OnStartExportComplete(UnityWebRequest www)
+    {
+        if (www.responseCode == 200)
         {
-            int index = i; // Cattura per lambda
-            if (scaleSliders[i] != null)
-            {
-                scaleSliders[i].OnValueUpdated.AddListener(
-                    (data) => UpdateSliderText(index, data.NewValue));
-                UpdateSliderText(i, scaleSliders[i].Value);
-            }
+            statusText.text = "Mesh export started. Monitoring progress...";
+            StartCoroutine(MonitorExportProgress());
         }
-    }
-
-    private void UpdateSliderText(int index, float value)
-    {
-        if (sliderTexts[index] != null)
-            sliderTexts[index].text = $"{(char)('X' + index)}: {value:F2}";
-    }
-
-    private void HandleExportButtonClick()
-    {
-        if (isExporting || isRequestPending)
+        else
         {
-            UpdateStatus("Esportazione già in corso...");
-            return;
-        }
-
-        StartExport();
-    }
-
-    private void StartExport()
-    {
-        // Prepara parametri export
-        var scaleParams = new
-        {
-            x = scaleSliders[0].Value,
-            y = scaleSliders[1].Value,
-            z = scaleSliders[2].Value
-        };
-
-        string jsonData = JsonUtility.ToJson(scaleParams);
-        StartCoroutine(SendExportRequest(jsonData));
-    }
-
-    private IEnumerator SendExportRequest(string jsonData)
-    {
-        isRequestPending = true;
-        UpdateStatus("Avvio esportazione...");
-
-        yield return SendRequestWithRetry(
-            $"{StartStopTrainingScript.ServerUrl}/start_export", 
-            "POST", 
-            OnExportRequestComplete,
-            jsonData
-        );
-    }
-
-    private void OnExportRequestComplete(UnityWebRequest www)
-    {
-        isRequestPending = false;
-
-        if (!HandleRequestError(www))
-        {
-            isExporting = true;
-            UpdateStatus("Monitoraggio esportazione...");
-            exportCoroutine = StartCoroutine(MonitorExportProgress());
+            statusText.text = "Error: Failed to start mesh export.";
         }
     }
 
     private IEnumerator MonitorExportProgress()
     {
+        isExporting = true;
         while (isExporting)
         {
-            yield return new WaitForSeconds(ProgressCheckInterval);
-            yield return SendRequestWithRetry(
-                $"{StartStopTrainingScript.ServerUrl}/export_progress",
-                "GET",
-                OnProgressReceived
-            );
+            yield return StartCoroutine(SendRequestWithRetry($"{StartStopTrainingScript.ServerUrl}/export_progress", "GET", OnExportProgressReceived));
+            yield return new WaitForSeconds(5f);
         }
     }
 
-    private void OnProgressReceived(UnityWebRequest www)
+    private void OnExportProgressReceived(UnityWebRequest www)
     {
         if (www.responseCode == 204)
         {
-            CompleteExport();
+            isExporting = false;
+            statusText.text = "Mesh export completed!";
         }
-        else if (www.responseCode != 200)
+        else if (www.responseCode == 200)
         {
-            HandleExportError("Errore durante l'esportazione");
+            statusText.text = "Mesh export in progress...";
         }
-    }
-
-    private void CompleteExport()
-    {
-        isExporting = false;
-        UpdateStatus("Esportazione completata!");
-        if (exportCoroutine != null)
+        else
         {
-            StopCoroutine(exportCoroutine);
-            exportCoroutine = null;
+            isExporting = false;
+            statusText.text = "Error: Mesh export failed.";
         }
     }
 
-    private void HandleExportError(string message)
-    {
-        isExporting = false;
-        UpdateStatus($"Errore: {message}");
-        if (exportCoroutine != null)
-        {
-            StopCoroutine(exportCoroutine);
-            exportCoroutine = null;
-        }
-    }
-
-    private bool HandleRequestError(UnityWebRequest www)
-    {
-        if (www.result != UnityWebRequest.Result.Success && 
-            www.responseCode != 204)
-        {
-            string error = string.IsNullOrEmpty(www.error) ? 
-                "Errore di rete" : www.error;
-            UpdateStatus($"Errore: {error}");
-            return true;
-        }
-        return false;
-    }
-
-    private void UpdateStatus(string message)
-    {
-        if (statusText != null)
-            statusText.text = message;
-        Debug.Log($"[ExportMesh] {message}");
-    }
-
-    private IEnumerator SendRequestWithRetry(
-        string url, 
-        string method,
-        Action<UnityWebRequest> callback,
-        string jsonData = ""
-    )
+    private IEnumerator SendRequestWithRetry(string url, string method, System.Action<UnityWebRequest> callback = null, string jsonData = "")
     {
         int retries = 0;
         bool success = false;
@@ -182,12 +119,18 @@ public class ExportMeshScript : MonoBehaviour
         {
             using (UnityWebRequest www = new UnityWebRequest(url, method))
             {
-                SetupRequest(www, jsonData);
-                
+                www.downloadHandler = new DownloadHandlerBuffer();
+
+                if (method == "POST" && !string.IsNullOrEmpty(jsonData))
+                {
+                    byte[] jsonToSend = new System.Text.UTF8Encoding().GetBytes(jsonData);
+                    www.uploadHandler = new UploadHandlerRaw(jsonToSend);
+                    www.SetRequestHeader("Content-Type", "application/json");
+                }
+
                 yield return www.SendWebRequest();
 
-                if (www.result == UnityWebRequest.Result.Success || 
-                    www.responseCode == 204)
+                if (www.responseCode != 0)
                 {
                     success = true;
                     callback?.Invoke(www);
@@ -195,36 +138,14 @@ public class ExportMeshScript : MonoBehaviour
                 else
                 {
                     retries++;
-                    if (retries < MaxRetries)
-                    {
-                        UpdateStatus($"Tentativo {retries}/{MaxRetries}...");
-                        yield return new WaitForSeconds(RetryDelay);
-                    }
+                    yield return new WaitForSeconds(RetryDelay);
                 }
             }
         }
 
         if (!success)
         {
-            UpdateStatus("Errore di connessione. Riprovare più tardi.");
+            statusText.text = "Error: Request failed. Please try again.";
         }
-    }
-
-    private void SetupRequest(UnityWebRequest www, string jsonData)
-    {
-        www.downloadHandler = new DownloadHandlerBuffer();
-        
-        if (!string.IsNullOrEmpty(jsonData))
-        {
-            byte[] jsonBytes = System.Text.Encoding.UTF8.GetBytes(jsonData);
-            www.uploadHandler = new UploadHandlerRaw(jsonBytes);
-            www.SetRequestHeader("Content-Type", "application/json");
-        }
-    }
-
-    private void OnDestroy()
-    {
-        if (exportCoroutine != null)
-            StopCoroutine(exportCoroutine);
     }
 }

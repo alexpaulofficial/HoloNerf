@@ -7,116 +7,95 @@ using System.Collections;
 
 public class ClearScreenshotFolder : MonoBehaviour
 {
-   [Header("UI References")]
-   [SerializeField] private TextMeshProUGUI statusText;
-   [SerializeField] private GameObject dialogCanvas; 
-   [SerializeField] private PressableButton confirmButton;
-   [SerializeField] private PressableButton cancelButton;
-   
-   [Header("Configuration")]
-   [SerializeField] private int maxRetries = 5;
-   [SerializeField] private float retryDelay = 5f;
-   
-   private PressableButton clearButton;
-   private bool isDeleting;
+    public TextMeshProUGUI statusText; // Riferimento al testo di stato (opzionale)
+    public GameObject CanvasDialog; // Pannello con finestra di dialogo
+    public PressableButton Positive; // Bottone di conferma eliminazione
+    public PressableButton Negative; // Bottone di annullamento eliminazione
+    private PressableButton clearButton; // Bottone Delete Dataset
 
-   private void Start()
-   {
-       SetupButtons();
-       dialogCanvas.SetActive(false);
-   }
+    private const int MaxRetries = 5;
+    private const float RetryDelay = 5f;
 
-   private void SetupButtons()
-   {
-       clearButton = GetComponent<PressableButton>();
-       if (!clearButton)
-       {
-           Debug.LogError("DeleteScript: Componente PressableButton mancante");
-           enabled = false;
-           return;
-       }
+    private void Start()
+    {
+        clearButton = GetComponent<PressableButton>();
+        if (clearButton != null)
+        {
+            // Imposta il listener per mostrare la finestra di dialogo
+            clearButton.OnClicked.AddListener(ShowConfirmationDialog);
+        }
+        else
+        {
+            Debug.LogError("ClearScreenshotFolder: PressableButton component not found on this GameObject.");
+        }
 
-       clearButton.OnClicked.AddListener(ShowConfirmationDialog);
-       confirmButton?.OnClicked.AddListener(HandleConfirmDelete);
-       cancelButton?.OnClicked.AddListener(() => dialogCanvas.SetActive(false));
-   }
+        // Imposta i listener per i bottoni della finestra di dialogo
+        if (Positive != null)
+        {
+            Positive.OnClicked.AddListener(ConfirmClearFolder);
+        }
+        if (Negative != null)
+        {
+            Negative.OnClicked.AddListener(ClearFolder);
+        }
 
-   private void ShowConfirmationDialog() => dialogCanvas.SetActive(true);
+        // Nascondi la finestra di dialogo all’avvio
+        CanvasDialog.SetActive(false);
+    }
 
-   private void HandleConfirmDelete()
-   {
-       if (isDeleting) return;
-       isDeleting = true;
-       StartCoroutine(DeleteDatasetRoutine());
-   }
+    // Mostra la finestra di dialogo di conferma
+    private void ShowConfirmationDialog()
+    {
+        CanvasDialog.SetActive(true); // Mostra la finestra di dialogo
+    }
 
-   private IEnumerator DeleteDatasetRoutine()
-   {
-       using (UnityWebRequest www = UnityWebRequest.Delete($"{StartStopTrainingScript.ServerUrl}/delete_server"))
-       {
-           www.downloadHandler = new DownloadHandlerBuffer();
-           yield return www.SendWebRequest();
+    // Conferma l’eliminazione del dataset
+    private void ConfirmClearFolder()
+    {
+        CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
+        string folderPath = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
 
-           if (www.result != UnityWebRequest.Result.Success)
-           {
-               UpdateStatus($"Errore server: {www.error}");
-               isDeleting = false;
-               dialogCanvas.SetActive(false);
-               yield break;
-           }
+        try
+        {
+            if (Directory.Exists(folderPath))
+            {
+                foreach (string file in Directory.GetFiles(folderPath))
+                {
+                    File.Delete(file);
+                }
+                foreach (string subdirectory in Directory.GetDirectories(folderPath))
+                {
+                    Directory.Delete(subdirectory, true);
+                }
+                UpdateStatus("Screenshot folder cleared successfully.");
+            }
+            else
+            {
+                UpdateStatus("Screenshot folder does not exist.");
+            }
+        }
+        catch (System.Exception e)
+        {
+            UpdateStatus($"Error clearing folder: {e.Message}");
+        }
+    }
 
-           // Parse risposta server
-           string responseText = www.downloadHandler.text;
-           if (responseText.Contains("\"status\":\"Error\""))
-           {
-               int startIndex = responseText.IndexOf("\"message\":\"") + "\"message\":\"".Length;
-               int endIndex = responseText.IndexOf("\"", startIndex);
-               string errorMessage = responseText.Substring(startIndex, endIndex - startIndex);
-               
-               UpdateStatus($"Impossibile eliminare: {errorMessage}");
-               isDeleting = false;
-               dialogCanvas.SetActive(false);
-               yield break;
-           }
+    // Annulla l’eliminazione del dataset
 
-           DeleteLocalFolder();
-       }
-   }
+    private void ClearFolder()
+    { 
+        CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
+        UpdateStatus("Dataset deletion canceled.");
 
-   private void DeleteLocalFolder()
-   {
-       string folderPath = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
-       
-       try
-       {
-           if (Directory.Exists(folderPath))
-           {
-               Directory.Delete(folderPath, true);
-               UpdateStatus("Dataset eliminato con successo");
-           }
-       }
-       catch (IOException ex)
-       {
-           Debug.LogError($"Errore eliminazione cartella: {ex.Message}");
-           UpdateStatus("Errore durante l'eliminazione dei file locali");
-       }
-       finally
-       {
-           isDeleting = false;
-           dialogCanvas.SetActive(false);
-       }
-   }
+    }
+    
 
-   private void UpdateStatus(string message)
-   {
-       if (statusText) statusText.text = message;
-       Debug.Log($"DeleteScript: {message}");
-   }
-
-   private void OnDestroy()
-   {
-       clearButton?.OnClicked.RemoveAllListeners();
-       confirmButton?.OnClicked.RemoveAllListeners(); 
-       cancelButton?.OnClicked.RemoveAllListeners();
-   }
+    private void UpdateStatus(string message)
+    {
+        if (statusText != null)
+        {
+            statusText.text = message;
+        }
+        Debug.Log($"ClearScreenshotFolder: {message}");
+    }
 }
