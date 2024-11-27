@@ -6,6 +6,7 @@ Autori: Alessio Paolucci, Marco Proietti
 Versione: 1.0
 """
 
+from functools import wraps
 import os
 import subprocess
 import sys
@@ -56,6 +57,24 @@ class ProcessState:
 config = Config()
 state = ProcessState()
 app = Flask(__name__)
+
+def retry_operation(max_attempts=5, delay=5):
+    """Decorator per retry delle operazioni critiche"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            attempts = 0
+            while attempts < max_attempts:
+                try:
+                    return func(*args, **kwargs)
+                except (IOError, subprocess.CalledProcessError):
+                    attempts += 1
+                    if attempts == max_attempts:
+                        raise
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
 
 # Serve nel file coordinates.txt dato che le coordinate sono con la virgola come separatore decimale
 def replace_commas_with_dots(file_path: str) -> None:
@@ -211,6 +230,7 @@ def create_transforms_dict(image_paths: list[str],
         "frames": frames
     }
 
+@retry_operation()
 def create_transforms_json(rgb_dir: str, 
                          intrinsics_path: str, 
                          extrinsics_path: str, 
@@ -304,6 +324,7 @@ def get_export_command(obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) 
             "--obb_rotation 0.0000000000 0.0000000000 0.0000000000 "
             f"--obb_scale {obb_scaleX} {obb_scaleY} {obb_scaleZ}")
 
+@retry_operation()
 def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) -> None:
     """
     Esegue un comando nell'ambiente Conda specificato.
