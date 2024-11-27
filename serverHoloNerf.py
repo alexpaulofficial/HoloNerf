@@ -18,8 +18,6 @@ import threading
 import multiprocessing
 from typing import Optional
 from dataclasses import dataclass
-from functools import wraps
-import time
 
 import numpy as np
 from PIL import Image
@@ -58,37 +56,6 @@ config = Config()
 state = ProcessState()
 app = Flask(__name__)
 
-def cleanup_temp_files():
-    """Rimuove i file ZIP temporanei più vecchi di 1 ora"""
-    temp_dir = config.DATA_FOLDER
-    threshold = time.time() - 3600
-   
-    for f in os.listdir(temp_dir):
-        if f.endswith('.zip'):
-            path = os.path.join(temp_dir, f)
-            if os.path.getctime(path) < threshold:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-           
-def retry_operation(max_attempts=5, delay=5):
-    """Decorator per retry delle operazioni critiche"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            attempts = 0
-            while attempts < max_attempts:
-                try:
-                    return func(*args, **kwargs)
-                except (IOError, subprocess.CalledProcessError):
-                    attempts += 1
-                    if attempts == max_attempts:
-                        raise
-                    time.sleep(delay)
-            return None
-        return wrapper
-    return decorator
 # Serve nel file coordinates.txt dato che le coordinate sono con la virgola come separatore decimale
 def replace_commas_with_dots(file_path: str) -> None:
     """
@@ -106,19 +73,10 @@ def replace_commas_with_dots(file_path: str) -> None:
         logger.error("Errore nella modifica del file %s: %s", file_path, e)
         raise
 
-# Aggiungi cleanup periodico
-def start_cleanup_thread():
-    def periodic_cleanup():
-        while True:
-            cleanup_temp_files()
-            time.sleep(3600)
-    
-    cleanup_thread = threading.Thread(target=periodic_cleanup, daemon=True)
-    cleanup_thread.start()
 # Serve per alleggerire il training, ridimensiona le immagini
 def resize_images(folder_path: str) -> None:
     """
-    Ridimensiona le immagini nella cartella specificata a risoluzione 720p.
+    Ridimensiona le immagini nella cartella specificata a risoluzione configurata.
     
     Args:
         folder_path: Percorso della cartella contenente le immagini
@@ -221,7 +179,7 @@ def create_transforms_dict(image_paths: list[str],
                          cx: float, cy: float, 
                          W: int, H: int) -> dict:
     """
-    Crea il dizionario dei trasformi per il formato JSON di NerfStudio.
+    Crea il dizionario per il formato JSON di NerfStudio.
     
     Args:
         image_paths: Lista dei percorsi delle immagini
@@ -252,7 +210,6 @@ def create_transforms_dict(image_paths: list[str],
         "frames": frames
     }
 
-@retry_operation()
 def create_transforms_json(rgb_dir: str, 
                          intrinsics_path: str, 
                          extrinsics_path: str, 
@@ -315,7 +272,7 @@ def create_zip_file(folder_path: str, output_folder: str, zip_name: str) -> str:
 
 def get_latest_output_folder() -> str:
     """
-    Trova la cartella di output più recente.
+    Trova la cartella di output più recente. Questo serve a far parttire l'esportazione dell'ultimo modello NeRF.
     
     Returns:
         str: Percorso della cartella più recente
@@ -346,7 +303,6 @@ def get_export_command(obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) 
             "--obb_rotation 0.0000000000 0.0000000000 0.0000000000 "
             f"--obb_scale {obb_scaleX} {obb_scaleY} {obb_scaleZ}")
 
-@retry_operation()
 def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) -> None:
     """
     Esegue un comando nell'ambiente Conda specificato.
@@ -355,7 +311,7 @@ def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) 
         command: Comando da eseguire
         output_queue: Coda per l'output del comando
     """
-    activate_cmd = f"call conda activate {config.CONDA_ENV} && " if sys.platform == "win32" else f"source activate {config.CONDA_ENV} && "
+    activate_cmd = f"call conda activate {config.CONDA_ENV} && "
     full_command = activate_cmd + command
 
     try:
@@ -363,7 +319,7 @@ def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) 
         my_env["PYTHONIOENCODING"] = "utf-8"
 
         with subprocess.Popen(
-            full_command, 
+            full_command,
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -443,7 +399,7 @@ def upload_data():
             zip_ref.extractall(config.DATA_FOLDER)
         os.remove(temp_zip_path)
         
-        # Ridimensiona le immagini a 720p
+        # Ridimensiona le immagini
         resize_images(os.path.join(config.DATA_FOLDER, "images"))
         return jsonify({"status": "Success", "message": "File caricato ed estratto con successo"})
     except (IOError, ValueError) as e:
@@ -533,17 +489,21 @@ def start_export():
     state.export_process.start()
 
     def monitor_export():
+        success = False
         while state.is_exporting:
             try:
                 line = output_queue.get(timeout=1)
                 if line is None:
+                    success = True
                     break
                 logger.info(line.strip())
+                if "Error" in line:
+                    break
             except queue.Empty:
                 pass
         
         state.is_exporting = False
-        state.export_completed = True
+        state.export_completed = success
         if state.export_process and state.export_process.is_alive():
             state.export_process.terminate()
             state.export_process.join()
@@ -608,9 +568,13 @@ if __name__ == "__main__":
     # Configurazione encoding per Windows
     if sys.platform == "win32":
         os.system("chcp 65001")
-
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    else:
+        with open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1) as stdout, \
+             open(sys.stderr.fileno(), mode='w', encoding='utf-8', buffering=1) as stderr:
+            sys.stdout = stdout
+            sys.stderr = stderr
 
     # Inizializza il multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
