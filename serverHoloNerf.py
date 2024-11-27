@@ -230,7 +230,7 @@ def create_transforms_dict(image_paths: list[str],
         "frames": frames
     }
 
-@retry_operation()
+#@retry_operation()
 def create_transforms_json(rgb_dir: str, 
                          intrinsics_path: str, 
                          extrinsics_path: str, 
@@ -324,7 +324,7 @@ def get_export_command(obb_scaleX: float, obb_scaleY: float, obb_scaleZ: float) 
             "--obb_rotation 0.0000000000 0.0000000000 0.0000000000 "
             f"--obb_scale {obb_scaleX} {obb_scaleY} {obb_scaleZ}")
 
-@retry_operation()
+#@retry_operation()
 def run_command_in_conda_env(command: str, output_queue: multiprocessing.Queue) -> None:
     """
     Esegue un comando nell'ambiente Conda specificato.
@@ -413,11 +413,14 @@ def upload_data():
         temp_zip_path = os.path.join(config.DATA_FOLDER, filename)
         file.save(temp_zip_path)
 
+        # Delete previous data except the ZIP file itself
+        for root, _, files in os.walk(config.DATA_FOLDER):
+            for file in files:
+                file_path = os.path.join(root, file)
+                if file_path != temp_zip_path:
+                    os.remove(file_path)
+
         with zipfile.ZipFile(temp_zip_path, "r") as zip_ref:
-            # Delete previous data
-            for root, _, files in os.walk(config.DATA_FOLDER):
-                for file in files:
-                    os.remove(os.path.join(root, file))
             zip_ref.extractall(config.DATA_FOLDER)
         os.remove(temp_zip_path)
         
@@ -509,14 +512,14 @@ def start_export():
         args=(output_queue, obb_scale_x, obb_scale_y, obb_scale_z)
     )
     state.export_process.start()
-
     def monitor_export():
         success = False
-        start_time = time.time()
+        last_update_time = time.time()
         while state.is_exporting:
             try:
-                if time.time() - start_time > 900:  # 15 minutes timeout
-                    logger.error("Timeout: il processo di esportazione ha superato i 15 minuti")
+                current_time = time.time()
+                if current_time - last_update_time > 900:  # 15 minutes timeout
+                    logger.error("Timeout: il processo di esportazione ha superato i 15 minuti senza aggiornamenti")
                     break
                 line = output_queue.get(timeout=1)
                 if line is None:
@@ -525,6 +528,7 @@ def start_export():
                 logger.info(line.strip())
                 if "Error" in line:
                     break
+                last_update_time = current_time  # Reset the timer on new output
             except queue.Empty:
                 pass
         
