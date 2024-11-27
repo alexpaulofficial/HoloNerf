@@ -18,6 +18,7 @@ import threading
 import multiprocessing
 from typing import Optional
 from dataclasses import dataclass
+import time
 
 import numpy as np
 from PIL import Image
@@ -490,8 +491,12 @@ def start_export():
 
     def monitor_export():
         success = False
+        start_time = time.time()
         while state.is_exporting:
             try:
+                if time.time() - start_time > 900:  # 15 minutes timeout
+                    logger.error("Timeout: il processo di esportazione ha superato i 15 minuti")
+                    break
                 line = output_queue.get(timeout=1)
                 if line is None:
                     success = True
