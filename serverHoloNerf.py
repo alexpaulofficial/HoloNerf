@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class Config:
     """Configurazione del server e dei parametri di elaborazione."""
     CONDA_ENV: str = "nerfstudio"
-    NERFSTUDIO_TRAIN_COMMAND: str = "ns-train nerfacto --data DATA"
+    NERFSTUDIO_TRAIN_COMMAND: str = "ns-train instant-ngp --data DATA"
     EXPORT_FOLDER: str = "exports/mesh"
     DATA_FOLDER: str = "DATA"
     IMAGE_TARGET_SIZE: tuple[int, int] = (1280, 720)
@@ -366,6 +366,11 @@ def run_training(output_queue: multiprocessing.Queue) -> None:
     Esegue il processo di training del modello NeRF.
     """
     try:
+        # Controlla che ci siano almeno 100 immagini
+        image_files = glob.glob(os.path.join(config.DATA_FOLDER, "images", "*.jpg"))
+        if len(image_files) < 50:
+            raise ValueError("Numero insufficiente di immagini per il training (minimo 50 foto)")
+
         # Crea il file transforms.json
         create_transforms_json(
             rgb_dir=os.path.join(config.DATA_FOLDER, "images", "*.jpg"),
@@ -453,6 +458,10 @@ def start_training():
                     if line is None:
                         break
                     logger.info(line.strip())
+                    if "Numero insufficiente di immagini per il training" in line:
+                        state.is_training = False
+                        state.is_completed = True
+                        return jsonify({"status": "Error", "message": line.strip()}), 400
                     if "%" in line and "Loading" not in line:
                         percentage = line.split("%")[0].split()[-1].strip("(")
                         try:
