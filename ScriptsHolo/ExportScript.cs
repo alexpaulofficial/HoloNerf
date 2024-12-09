@@ -103,10 +103,11 @@ public class ExportMeshScript : MonoBehaviour
         {
             statusText.text = "Mesh export in progress...";
         }
-        else
+        else if (www.responseCode == 400)
         {
-            isExporting = false;
-            statusText.text = "Error: Mesh export failed.";
+            string jsonContent = www.downloadHandler.text;
+            isExporting= false;
+            statusText.text = "Export error: " + jsonContent;
         }
     }
 

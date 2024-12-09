@@ -11,7 +11,7 @@ public class StartStopTrainingScript : MonoBehaviour
     [SerializeField] private PressableButton trainingButton;
     [SerializeField] private TextMeshProUGUI statusText;
     private TextMeshPro buttonText;
-    [SerializeField] public static string ServerUrl = "http://172.24.154.61:5000";
+    [SerializeField] public static string ServerUrl = "http://172.24.137.101:5000";
     private bool isTraining = false;
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
@@ -163,6 +163,13 @@ public class StartStopTrainingScript : MonoBehaviour
         {
             ProgressData progressData = JsonUtility.FromJson<ProgressData>(www.downloadHandler.text);
             statusText.text = $"Training progress: {progressData.progress}%";
+        }
+        else if (www.responseCode == 400)
+        {
+            string jsonContent = www.downloadHandler.text;
+            isTraining = false;
+            UpdateButtonText();
+            statusText.text = "Training error: " + jsonContent;
         }
     }
 

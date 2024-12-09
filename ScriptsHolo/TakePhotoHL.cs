@@ -9,7 +9,7 @@ using System.Linq;
 
 public class ScreenshotHandlerHL : MonoBehaviour
 {
-    public string screenshotFolder;
+    private string screenshotFolder;
     public string coordinatesFileName = "coordinates.txt";
     public float seconds = 0.1f;
 
@@ -25,7 +25,7 @@ public class ScreenshotHandlerHL : MonoBehaviour
     public GameObject markerPrefab;
     private List<GameObject> markers = new List<GameObject>();
 
-    private PhotoCapture photoCaptureObject = null;
+    public PhotoCapture photoCaptureObject = null;
     private bool isCapturingPhoto = false;
 
 
@@ -204,8 +204,8 @@ public class ScreenshotHandlerHL : MonoBehaviour
         if (result.success)
         {
             statusText.text = $"Screenshot {screenshotCounter} saved successfully";
-            screenshotButtonText.text = screenshotCounter.ToString();
             screenshotCounter++;
+            screenshotButtonText.text = screenshotCounter.ToString();
             SaveCoordinates();
             PlaceMarker();
         }
@@ -268,7 +268,7 @@ public class ScreenshotHandlerHL : MonoBehaviour
             Quaternion rotation = Camera.main.transform.rotation;
 
             GameObject marker = Instantiate(markerPrefab, position, rotation);
-            marker.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
+            marker.transform.localScale = new Vector3(0.1f, 0.1f, 0.1f);
             markers.Add(marker);
 
             statusText.text = "Marker added: " + marker.name + ". Total markers: " + markers.Count;
@@ -306,3 +306,4 @@ public class ScreenshotHandlerHL : MonoBehaviour
 
 
 }
+

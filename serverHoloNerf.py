@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 class Config:
     """Configurazione del server e dei parametri di elaborazione."""
     CONDA_ENV: str = "nerfstudio"
-    NERFSTUDIO_TRAIN_COMMAND: str = "ns-train instant-ngp --data DATA"
+    NERFSTUDIO_TRAIN_COMMAND: str = "ns-train nerfacto --data DATA"
     EXPORT_FOLDER: str = "exports/mesh"
     DATA_FOLDER: str = "DATA"
     IMAGE_TARGET_SIZE: tuple[int, int] = (1280, 720)
@@ -50,6 +50,7 @@ class ProcessState:
         self.training_progress: float = 0
         self.is_training: bool = False
         self.is_completed: bool = False
+        self.is_error: int = 0
         self.export_process: Optional[multiprocessing.Process] = None
         self.is_exporting: bool = False
         self.export_completed: bool = False
@@ -366,7 +367,7 @@ def run_training(output_queue: multiprocessing.Queue) -> None:
     Esegue il processo di training del modello NeRF.
     """
     try:
-        # Controlla che ci siano almeno 100 immagini
+        # Controlla che ci siano almeno 50 immagini
         image_files = glob.glob(os.path.join(config.DATA_FOLDER, "images", "*.jpg"))
         if len(image_files) < 50:
             raise ValueError("Numero insufficiente di immagini per il training (minimo 50 foto)")
@@ -443,6 +444,7 @@ def start_training():
         state.is_training = True
         state.training_progress = 0
         state.is_completed = False
+        state.is_error = 0
         manager = multiprocessing.Manager()
         output_queue = manager.Queue()
         state.training_process = multiprocessing.Process(
@@ -452,7 +454,7 @@ def start_training():
         state.training_process.start()
 
         def monitor_output():
-            while state.is_training or not state.is_completed:
+            while state.is_training or not state.is_completed or state.is_error == 0:
                 try:
                     line = output_queue.get(timeout=1)
                     if line is None:
@@ -460,8 +462,12 @@ def start_training():
                     logger.info(line.strip())
                     if "Numero insufficiente di immagini per il training" in line:
                         state.is_training = False
-                        state.is_completed = True
-                        return jsonify({"status": "Error", "message": line.strip()}), 400
+                        state.is_error = 1
+                        break
+                    if "Error" in line:
+                        state.is_training = False
+                        state.is_error = 2
+                        break
                     if "%" in line and "Loading" not in line:
                         percentage = line.split("%")[0].split()[-1].strip("(")
                         try:
@@ -579,6 +585,12 @@ def stop_training():
 @app.route("/training_progress")
 def get_training_progress():
     """Controlla lo stato del training."""
+    if state.is_error == 1:
+        state.is_training = False
+        return jsonify({"status": "Error", "message": "Numero di immagini insufficienti (<50)"}), 400
+    if state.is_error == 2:
+        state.is_training = False
+        return jsonify({"status": "Error", "message": "Errore sul training"}), 400
     if state.training_progress == 100 or state.is_completed:
         state.is_training = False
         state.is_completed = True

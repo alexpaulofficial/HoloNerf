@@ -4,6 +4,7 @@ using MixedReality.Toolkit.UX;
 using TMPro;
 using UnityEngine.Networking;
 using System.Collections;
+using UnityEngine.Windows.WebCam;
 
 public class ClearScreenshotFolder : MonoBehaviour
 {
@@ -12,6 +13,7 @@ public class ClearScreenshotFolder : MonoBehaviour
     public PressableButton Positive; // Bottone di conferma eliminazione
     public PressableButton Negative; // Bottone di annullamento eliminazione
     private PressableButton clearButton; // Bottone Delete Dataset
+    public PhotoCapture photoCapture; // Aggiungi questo come riferimento nello script
 
     private const int MaxRetries = 5;
     private const float RetryDelay = 5f;
@@ -50,7 +52,7 @@ public class ClearScreenshotFolder : MonoBehaviour
     }
 
     // Conferma l’eliminazione del dataset
-    private void ConfirmClearFolder()
+    /*private void ConfirmClearFolder()
     {
         CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
         string folderPath = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
@@ -78,17 +80,70 @@ public class ClearScreenshotFolder : MonoBehaviour
         {
             UpdateStatus($"Error clearing folder: {e.Message}");
         }
-    }
+    }*/
 
     // Annulla l’eliminazione del dataset
 
+
+    private void ConfirmClearFolder()
+    {
+        CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
+        string folderPath = Path.Combine(Application.temporaryCachePath, "CAPTURE", "images");
+
+        if (photoCapture != null) // Controlla se la modalità fotografica è attiva
+        {
+            photoCapture.StopPhotoModeAsync((result) =>
+            {
+                photoCapture.Dispose();
+                photoCapture = null;
+                Debug.Log("Photo mode stopped. Proceeding to clear folder.");
+
+                // Procedi con l'eliminazione del dataset dopo aver fermato la Photo Mode
+                DeleteDataset(folderPath);
+            });
+        }
+        else
+        {
+            // Se la modalità fotografica non è attiva, elimina direttamente il dataset
+            DeleteDataset(folderPath);
+        }
+    }
+
+    // Funzione per eliminare il dataset
+    private void DeleteDataset(string folderPath)
+    {
+        try
+        {
+            if (Directory.Exists(folderPath))
+            {
+                foreach (string file in Directory.GetFiles(folderPath))
+                {
+                    File.Delete(file);
+                }
+                foreach (string subdirectory in Directory.GetDirectories(folderPath))
+                {
+                    Directory.Delete(subdirectory, true);
+                }
+                UpdateStatus("Screenshot folder cleared successfully.");
+            }
+            else
+            {
+                UpdateStatus("Screenshot folder does not exist.");
+            }
+        }
+        catch (System.Exception e)
+        {
+            UpdateStatus($"Error clearing folder: {e.Message}");
+        }
+    }
+
     private void ClearFolder()
-    { 
+    {
         CanvasDialog.SetActive(false); // Nasconde la finestra di dialogo
         UpdateStatus("Dataset deletion canceled.");
 
     }
-    
+
 
     private void UpdateStatus(string message)
     {
