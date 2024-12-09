@@ -3,7 +3,7 @@ using System.IO;
 
 public class CaptureCameraIntrinsics : MonoBehaviour
 {
-    public string savePath;
+    private string savePath;
 
     void Start()
     {
