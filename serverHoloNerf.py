@@ -613,7 +613,7 @@ def get_mesh():
             return jsonify({"status": "Error", "message": "File mesh non trovato"}), 404
     except (OSError, ValueError) as e:
         logger.error("Errore nel recupero del mesh: %s", e)
-        return jsonify({"status": "Error", "message": "Errore nel recupero del mesh"}), 500
+        return jsonify({"status": "Error", "message": "Errore nel recupero della mesh"}), 500
     
 if __name__ == "__main__":
     # Configurazione encoding per Windows
