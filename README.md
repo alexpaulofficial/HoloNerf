@@ -345,4 +345,6 @@ Questa documentazione fornisce le linee guida essenziali per l'utilizzo del sist
 
 ## Video Demo
 
-<video src=".github/demo.mp4" controls></video>
+https://github.com/user-attachments/assets/4d258a4b-b09c-4148-af35-c3b296e7bbcf
+
+
