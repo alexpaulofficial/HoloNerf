@@ -6,7 +6,7 @@
 
 ## Panoramica del Progetto
 
-HoloNeRF integra la tecnologia dei Campi di Radianza Neurali (NeRF) con la Realtà Mista attraverso HoloLens, consentendo la ricostruzione e visualizzazione 3D in tempo reale. Il sistema è composto da due componenti principali: un'applicazione client HoloLens costruita con Unity e un server basato su Flask che gestisce l'addestramento NeRF e la generazione di modelli 3D.
+HoloNeRF integra la tecnologia dei Campi di Radianza Neurali (NeRF) con la Realtà Mista attraverso HoloLens 2, consentendo la ricostruzione e visualizzazione 3D in tempo reale. Il sistema è composto da due componenti principali: un'applicazione client HoloLens costruita con Unity e un server basato su Flask che gestisce l'addestramento NeRF e la generazione di modelli 3D.
 
 ## Architettura del Sistema
 
@@ -32,7 +32,7 @@ L'applicazione HoloLens è costruita con Unity e gestisce diverse funzionalità 
 
 - **ImportScript.cs**
   
-  - Utilizza la libreria Dummiesman per il caricamento di file OBJ
+  - Utilizza la libreria *Dummiesman* per il caricamento di file OBJ
   - Gestisce il posizionamento delle mesh importate nella scena
   - Implementa controlli di errore e gestione della memoria
 
@@ -64,7 +64,7 @@ L'applicazione HoloLens è costruita con Unity e gestisce diverse funzionalità 
   
   **ATTENZIONE!** E' stato anche testato un approccio basato su buffer in memoria che prevedeva l'accumulo delle immagini RAW e il loro salvataggio su disco solo al termine dell'acquisizione. Tuttavia, questo metodo si è rivelato impraticabile a causa dell'elevato consumo di memoria, considerando che ogni immagine RAW occupa circa 32MB. Inoltre, la conversione batch da formato RAW a JPEG, necessaria durante il salvataggio su disco, causava significative interruzioni del sistema, bloccando l'applicazione per diversi secondi anche quando eseguita a intervalli regolari. Dopo varie prove, si è optato per un approccio più lineare: acquisizione e salvataggio immediato di ogni singola immagine. Nonostante questo metodo richieda più tempo per processare ogni foto individualmente, garantisce un'esperienza di acquisizione più fluida e stabile, evitando le interruzioni improvvise che compromettevano l'usabilità del sistema nel metodo precedente.
 
-- La fotocamera scatta in 4k ma poi le immagini vengono downscalate a 720p per ottimizzare il training. Gli intrinseci usati quindi sono:
+- La fotocamera scatta in 4k ma poi le immagini vengono downscalate dal server a 720p per ottimizzare il training. Gli intrinseci usati quindi sono:
   
   ```csharp
   // Apertura focale camera esterna Hololens 2 (presa da documentzione ufficiale)
@@ -213,7 +213,8 @@ dataset.zip
 mesh.zip
 ├── mesh.obj
 ├── mesh.mtl
-└── textures/
+├── poisson_mesh.ply
+└── material.png
 ```
 
 **ATTENZIONE!** Quando si crea un file ZIP all'interno dell'Hololens, potrebbero verificarsi temporanei problemi di interfaccia. Per mitigare questo problema, è stata utilizzata una libreria di sistema e un task separato per la compressione ZIP. Sebbene questo approccio abbia ridotto significativamente il problema, può ancora causare un lieve rallentamento. 
@@ -291,7 +292,7 @@ export_command = (f"ns-export poisson "
 
 ### Linee Guida per la Raccolta Dati
 
-- È raccomandato un <u>minimo di 150 immagini</u> per ottenere risultati ottimali
+- È raccomandato un *minimo di 150 immagini* per ottenere risultati ottimali (<u>sotto 50 immagini il training non può essere effettuato</u>)
   - Un numero inferiore potrebbe compromettere la qualità della ricostruzione
   - Dataset più ampi possono migliorare significativamente la precisione, senza esagerare considerando la natura delle NeRF (overfitting)
 - Le immagini devono presentare una sovrapposizione sufficiente tra scatti consecutivi
@@ -341,3 +342,7 @@ export_command = (f"ns-export poisson "
   - Consigliato ottimizzare i dataset per rispettare questo limite
 
 Questa documentazione fornisce le linee guida essenziali per l'utilizzo del sistema. Si raccomanda di seguire attentamente tutte le indicazioni per ottenere i migliori risultati possibili.
+
+## Video Demo
+
+<video src='.github/demo.mp4' width="200"/>
