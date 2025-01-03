@@ -277,6 +277,11 @@ export_command = (f"ns-export poisson "
 
 ## Prerequisiti
 
+Unity (testato nella versione **2022.3.30f1**)
+Visual Studio 2022 (testato nella versione **17.10.0**)
+Visual Studio Build Tools 2022 (testato nella versione **17.8.10**)
+Nerfstudio
+
 ### Ambiente di Sviluppo
 
 - L'ambiente Conda deve essere configurato correttamente sul sistema
