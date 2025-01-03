@@ -345,4 +345,4 @@ Questa documentazione fornisce le linee guida essenziali per l'utilizzo del sist
 
 ## Video Demo
 
-<video src='.github/demo.mp4' width="200"/>
+https://user-images.githubusercontent.com/alexpaulofficial/HoloNerf/blob/main/.github/demo.mp4
